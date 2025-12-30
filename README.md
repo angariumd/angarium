@@ -1,4 +1,4 @@
-# angariumd
+# Angarium
 
 A lightweight GPU job queue for small clusters (5–100 GPUs) that replaces SSH chaos.
 
