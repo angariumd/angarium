@@ -1,0 +1,7 @@
+addr: "localhost:8080"
+db_path: "angarium.db"
+shared_token: "agent-secret-token"
+users:
+  - id: "user-1"
+    name: "Sam"
+    token: "sam-secret-token"
