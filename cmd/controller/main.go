@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"github.com/angariumd/angarium/internal/config"
 	"github.com/angariumd/angarium/internal/controller"
 	"github.com/angariumd/angarium/internal/db"
+	"github.com/angariumd/angarium/internal/scheduler"
 )
 
 func main() {
@@ -42,6 +44,10 @@ func main() {
 
 	authenticator := auth.NewAuthenticator(database)
 	server := controller.NewServer(database, authenticator)
+
+	// Start scheduler
+	sched := scheduler.New(database)
+	go sched.Run(context.Background(), 2*time.Second)
 
 	// Start stale node detector
 	server.StartStaleNodeDetector(10 * time.Second)
