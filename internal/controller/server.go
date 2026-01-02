@@ -182,7 +182,12 @@ func (s *Server) handleJobList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleNodeList(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query("SELECT id, status, last_heartbeat_at, agent_version, addr FROM nodes")
+	rows, err := s.db.Query(`
+		SELECT n.id, n.status, n.last_heartbeat_at, n.agent_version, n.addr,
+		(SELECT COUNT(*) FROM gpus g WHERE g.node_id = n.id AND g.health = 'OK') as gpu_count,
+		(SELECT COUNT(*) FROM gpus g WHERE g.node_id = n.id AND g.health = 'OK' AND g.id NOT IN (SELECT gpu_id FROM gpu_leases l WHERE l.expires_at > datetime('now'))) as gpu_free
+		FROM nodes n
+	`)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
@@ -192,7 +197,7 @@ func (s *Server) handleNodeList(w http.ResponseWriter, r *http.Request) {
 	var nodes []models.Node
 	for rows.Next() {
 		var n models.Node
-		if err := rows.Scan(&n.ID, &n.Status, &n.LastHeartbeatAt, &n.AgentVersion, &n.Addr); err != nil {
+		if err := rows.Scan(&n.ID, &n.Status, &n.LastHeartbeatAt, &n.AgentVersion, &n.Addr, &n.GPUCount, &n.GPUFree); err != nil {
 			http.Error(w, "db error scan", http.StatusInternalServerError)
 			return
 		}

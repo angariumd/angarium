@@ -53,7 +53,22 @@ echo "Inspecting queued job..."
 LARGE_JOB_ID=$(./bin/cli queue | grep "too big" | awk '{print $1}')
 ./bin/cli inspect $LARGE_JOB_ID
 
-# Clean up
+echo "--- Testing Lease Recovery ---"
+echo "Killing controller to simulate crash..."
+kill $CONTROLLER_PID
+sleep 2
+
+echo "Expiring leases in database..."
+sqlite3 angarium.db "UPDATE gpu_leases SET expires_at = datetime('now', '-1 hour');"
+
+echo "Restarting controller..."
+./bin/controller --config config/controller.yaml > controller.restart.log 2>&1 &
+CONTROLLER_PID=$!
+sleep 5
+
+echo "Checking if GPUs are recovered (should show 2/2 free)..."
+./bin/cli status
+
 echo "Cleaning up..."
 kill $CONTROLLER_PID $AGENT_PID
 echo "Smoke test finished."

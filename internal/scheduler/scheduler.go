@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const DefaultLeaseDuration = 1 * time.Minute
+
 type Scheduler struct {
 	db *db.DB
 }
@@ -20,6 +22,10 @@ func New(db *db.DB) *Scheduler {
 }
 
 func (s *Scheduler) Run(ctx context.Context, interval time.Duration) {
+	// Run once immediately on startup for recovery
+	s.CleanupLeases(ctx)
+	s.Schedule(ctx)
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -72,43 +78,52 @@ func (s *Scheduler) getQueuedJobs() ([]models.Job, error) {
 type nodeCapacity struct {
 	nodeID    string
 	available []models.GPU
+	healthy   []models.GPU
+}
+
+type clusterStats struct {
+	totalHealthyGPUs       int
+	maxHealthySingleNode   int
+	totalAvailableGPUs     int
+	maxAvailableSingleNode int
+	nodes                  []nodeCapacity
 }
 
 func (s *Scheduler) tryScheduleJob(job models.Job) error {
-	nodes, err := s.getAvailableNodesAndGPUs()
+	stats, err := s.getClusterStats()
 	if err != nil {
 		return err
 	}
 
-	if len(nodes) == 0 {
-		return s.updateJobReason(job.ID, "No UP nodes found")
+	if len(stats.nodes) == 0 {
+		return s.updateJobReason(job.ID, "No nodes are currently UP")
 	}
 
+	// 1. Check if the job is physically satisfyable by the cluster (hardware check)
+	if stats.totalHealthyGPUs < job.GPUCount {
+		return s.updateJobReason(job.ID, fmt.Sprintf("Cluster only has %d healthy GPUs total, but job requires %d", stats.totalHealthyGPUs, job.GPUCount))
+	}
+	if stats.maxHealthySingleNode < job.GPUCount {
+		return s.updateJobReason(job.ID, fmt.Sprintf("No single node has %d GPUs (max capacity is %d)", job.GPUCount, stats.maxHealthySingleNode))
+	}
+
+	// 2. Hardware exists, check if it's currently available (occupancy check)
 	var bestNode *nodeCapacity
-	for i := range nodes {
-		if len(nodes[i].available) >= job.GPUCount {
-			if bestNode == nil || len(nodes[i].available) < len(bestNode.available) {
-				bestNode = &nodes[i]
+	for i := range stats.nodes {
+		if len(stats.nodes[i].available) >= job.GPUCount {
+			if bestNode == nil || len(stats.nodes[i].available) < len(bestNode.available) {
+				bestNode = &stats.nodes[i]
 			}
 		}
 	}
 
 	if bestNode == nil {
-		// Identify why it failed
-		totalAvailable := 0
-		maxSingleNode := 0
-		for _, n := range nodes {
-			totalAvailable += len(n.available)
-			if len(n.available) > maxSingleNode {
-				maxSingleNode = len(n.available)
-			}
+		if stats.totalAvailableGPUs < job.GPUCount {
+			busyCount := stats.totalHealthyGPUs - stats.totalAvailableGPUs
+			return s.updateJobReason(job.ID, fmt.Sprintf("Waiting for GPUs to be released (%d GPUs currently busy/leased)", busyCount))
 		}
-
-		reason := fmt.Sprintf("Insufficient GPUs on a single node (requested %d, max available %d)", job.GPUCount, maxSingleNode)
-		if totalAvailable < job.GPUCount {
-			reason = fmt.Sprintf("Insufficient total GPUs in cluster (requested %d, total available %d)", job.GPUCount, totalAvailable)
-		}
-		return s.updateJobReason(job.ID, reason)
+		// If totalAvailable >= job.GPUCount but bestNode is still nil, it means fragmentation
+		return s.updateJobReason(job.ID, fmt.Sprintf("Waiting for a single node to have %d free GPUs (fragmented: %d total free across nodes)", job.GPUCount, stats.totalAvailableGPUs))
 	}
 
 	// Found a node! Select the first N GPUs (best-fit packing already decided the node)
@@ -116,7 +131,7 @@ func (s *Scheduler) tryScheduleJob(job models.Job) error {
 	return s.allocateJob(job, bestNode.nodeID, selectedGPUs)
 }
 
-func (s *Scheduler) getAvailableNodesAndGPUs() ([]nodeCapacity, error) {
+func (s *Scheduler) getClusterStats() (*clusterStats, error) {
 	// 1. Get all UP nodes
 	rows, err := s.db.Query("SELECT id FROM nodes WHERE status = 'UP'")
 	if err != nil {
@@ -124,7 +139,7 @@ func (s *Scheduler) getAvailableNodesAndGPUs() ([]nodeCapacity, error) {
 	}
 	defer rows.Close()
 
-	nodeIDs := []string{}
+	var nodeIDs []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
@@ -133,39 +148,48 @@ func (s *Scheduler) getAvailableNodesAndGPUs() ([]nodeCapacity, error) {
 		nodeIDs = append(nodeIDs, id)
 	}
 
+	stats := &clusterStats{nodes: []nodeCapacity{}}
 	if len(nodeIDs) == 0 {
-		return nil, nil
+		return stats, nil
 	}
 
-	// 2. Get all GPUs for these nodes that are NOT currently leased/allocated
-	// Note: We check gpu_leases for active leases.
-	// Since we don't have a release yet, we assume leases exist until they expire or are manually removed.
-	capacities := []nodeCapacity{}
 	for _, nodeID := range nodeIDs {
 		gpuRows, err := s.db.Query(`
-			SELECT id, node_id, idx, uuid, name, memory_mb, health, last_seen_at
-			FROM gpus
-			WHERE node_id = ? AND health = 'OK'
-			AND id NOT IN (SELECT gpu_id FROM gpu_leases WHERE expires_at > datetime('now'))
+			SELECT g.id, g.node_id, g.idx, g.uuid, g.name, g.memory_mb, g.health, g.last_seen_at,
+			       (SELECT COUNT(*) FROM gpu_leases l WHERE l.gpu_id = g.id AND l.expires_at > datetime('now')) as is_leased
+			FROM gpus g
+			WHERE g.node_id = ? AND g.health = 'OK'
 		`, nodeID)
 		if err != nil {
 			return nil, err
 		}
 
-		gpus := []models.GPU{}
+		nodeCap := nodeCapacity{nodeID: nodeID, available: []models.GPU{}, healthy: []models.GPU{}}
 		for gpuRows.Next() {
 			var g models.GPU
-			if err := gpuRows.Scan(&g.ID, &g.NodeID, &g.Idx, &g.UUID, &g.Name, &g.MemoryMB, &g.Health, &g.LastSeenAt); err != nil {
+			var isLeased int
+			if err := gpuRows.Scan(&g.ID, &g.NodeID, &g.Idx, &g.UUID, &g.Name, &g.MemoryMB, &g.Health, &g.LastSeenAt, &isLeased); err != nil {
 				gpuRows.Close()
 				return nil, err
 			}
-			gpus = append(gpus, g)
+			nodeCap.healthy = append(nodeCap.healthy, g)
+			if isLeased == 0 {
+				nodeCap.available = append(nodeCap.available, g)
+			}
 		}
 		gpuRows.Close()
-		capacities = append(capacities, nodeCapacity{nodeID: nodeID, available: gpus})
+		stats.totalHealthyGPUs += len(nodeCap.healthy)
+		if len(nodeCap.healthy) > stats.maxHealthySingleNode {
+			stats.maxHealthySingleNode = len(nodeCap.healthy)
+		}
+		stats.totalAvailableGPUs += len(nodeCap.available)
+		if len(nodeCap.available) > stats.maxAvailableSingleNode {
+			stats.maxAvailableSingleNode = len(nodeCap.available)
+		}
+		stats.nodes = append(stats.nodes, nodeCap)
 	}
 
-	return capacities, nil
+	return stats, nil
 }
 
 func (s *Scheduler) allocateJob(job models.Job, nodeID string, gpus []models.GPU) error {
@@ -177,7 +201,7 @@ func (s *Scheduler) allocateJob(job models.Job, nodeID string, gpus []models.GPU
 
 	allocationID := uuid.New().String()
 	now := time.Now()
-	expiresAt := now.Add(1 * time.Minute) // Initial lease for starting
+	expiresAt := now.Add(DefaultLeaseDuration) // Initial lease for starting
 
 	// 1. Update Job state
 	_, err = tx.Exec("UPDATE jobs SET state = ?, reason = NULL WHERE id = ?", models.JobStateAllocated, job.ID)

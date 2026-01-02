@@ -10,6 +10,8 @@ type Node struct {
 	LastHeartbeatAt time.Time `json:"last_heartbeat_at"`
 	AgentVersion    string    `json:"agent_version"`
 	Addr            string    `json:"addr"`
+	GPUCount        int       `json:"gpu_count"`
+	GPUFree         int       `json:"gpu_free"`
 }
 
 type GPU struct {

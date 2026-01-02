@@ -138,9 +138,9 @@ func showStatus(cmd *cobra.Command, args []string) error {
 	// We need another one or update handleNodeList to include GPUs.
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NODE ID\tSTATUS\tADDR")
+	fmt.Fprintln(w, "NODE ID\tSTATUS\tADDR\tGPUS (FREE/TOTAL)")
 	for _, n := range nodes {
-		fmt.Fprintf(w, "%s\t%s\t%s\n", n.ID, n.Status, n.Addr)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d/%d\n", n.ID, n.Status, n.Addr, n.GPUFree, n.GPUCount)
 	}
 	return w.Flush()
 }

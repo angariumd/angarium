@@ -11,6 +11,52 @@ import (
 	"github.com/angariumd/angarium/internal/models"
 )
 
+func TestLeaseRecovery(t *testing.T) {
+	dbPath := "test_recovery.db"
+	os.Remove(dbPath)
+	defer os.Remove(dbPath)
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	database.Init()
+
+	seedUser(t, database, "user-1", "Alice", "secret")
+	seedNode(t, database, "node-A", 1)
+
+	// Manually insert an expired lease
+	// Note: sqlite datetime('now') uses UTC, so we should too.
+	database.Exec(`
+		INSERT INTO allocations (id, job_id, node_id, status, created_at)
+		VALUES ('old-alloc', 'old-job', 'node-A', 'ALLOCATED', datetime('now', '-2 minutes'))
+	`)
+	database.Exec(`
+		INSERT INTO gpu_leases (gpu_id, allocation_id, leased_at, expires_at)
+		VALUES ('GPU-node-A-0', 'old-alloc', datetime('now', '-2 minutes'), datetime('now', '-1 minute'))
+	`)
+
+	s := New(database)
+
+	// On startup, Run() calls CleanupLeases.
+	// The GPU should become available.
+	s.CleanupLeases(context.Background())
+
+	// Verify lease is gone
+	var count int
+	database.QueryRow("SELECT COUNT(*) FROM gpu_leases").Scan(&count)
+	if count != 0 {
+		t.Errorf("Expected 0 leases after cleanup, got %d", count)
+	}
+
+	// Try to schedule a new job on that GPU
+	jobID := seedJob(t, database, "user-1", 1)
+	s.Schedule(context.Background())
+
+	checkJobState(t, database, jobID, models.JobStateAllocated, "node-A")
+}
+
 func TestBestFit(t *testing.T) {
 	dbPath := "test_scheduler.db"
 	os.Remove(dbPath)
@@ -46,11 +92,13 @@ func TestBestFit(t *testing.T) {
 
 	checkJobState(t, database, job2ID, models.JobStateAllocated, "node-B")
 
-	// 3. Submit a 2-GPU job. Only 1 left on Node B, 0 on Node A. Should stay QUEUED with "Insufficient total".
+	// 3. Submit a 2-GPU job. Only 1 left on Node B, 0 on Node A. Should stay QUEUED with "busy" reason.
 	job3ID := seedJob(t, database, "user-1", 2)
 	s.Schedule(context.Background())
 
-	checkJobQueuedWithReason(t, database, job3ID, "Insufficient total GPUs in cluster (requested 2, total available 1)")
+	// Total healthy: 6. Busy: 2 (Job1) + 3 (Job2) = 5. Available: 1.
+	// Requested: 2. Reason should be "Waiting for GPUs to be released"
+	checkJobQueuedWithReason(t, database, job3ID, "Waiting for GPUs to be released (5 GPUs currently busy/leased)")
 
 	// 4. Submit a 1-GPU job. Should go to Node B (Node B has 1 left).
 	job4ID := seedJob(t, database, "user-1", 1)
@@ -58,30 +106,40 @@ func TestBestFit(t *testing.T) {
 
 	checkJobState(t, database, job4ID, models.JobStateAllocated, "node-B")
 
-	// 5. Release Node A GPUs and seed a new node C with 1 GPU.
-	// Cluster: Node A (2), Node B (0), Node C (1) - but let's just use Node A and C.
-	// Actually, let's just seed a new scenario.
-	seedNode(t, database, "node-C", 1)
-	// Current State:
-	// Actually, let's just create a fresh scenario for "Split" check.
+	// 5. Submit a 10-GPU job. Physically impossible.
+	job5ID := seedJob(t, database, "user-1", 10)
+	s.Schedule(context.Background())
+	checkJobQueuedWithReason(t, database, job5ID, "Cluster only has 6 healthy GPUs total, but job requires 10")
 
-	// Reset All state for a clean split test
+	// 6. Submit a 5-GPU job. Cluster has 6 total, but max node is 4. Impossible for single-node placement.
+	job6ID := seedJob(t, database, "user-1", 5)
+	s.Schedule(context.Background())
+	checkJobQueuedWithReason(t, database, job6ID, "No single node has 5 GPUs (max capacity is 4)")
+
+	// 7. Test Fragmentation correctly
+	// Reset Everything
 	database.Exec("DELETE FROM gpu_leases")
 	database.Exec("DELETE FROM allocations")
 	database.Exec("DELETE FROM gpus")
 	database.Exec("DELETE FROM nodes")
 	database.Exec("UPDATE jobs SET state='CANCELED'")
 
-	// Node A: 1 free, Node B: 1 free. Total 2.
-	database.Exec("UPDATE gpus SET health='OK'") // reset health
-	// We need to manually lease some GPUs to simulate "busy"
-	// Or just use the seedNode with 1 GPU each.
-	seedNode(t, database, "split-A", 1)
-	seedNode(t, database, "split-B", 1)
+	// Node A: 3 healthy total, Node B: 3 healthy total.
+	seedNode(t, database, "frag-A", 3)
+	seedNode(t, database, "frag-B", 3)
 
-	jobSplitID := seedJob(t, database, "user-1", 2)
+	// Occupy 2 on A and 2 on B to leave 1 free on each.
+	// Total available: 2. Max available single-node: 1.
+	jobA := seedJob(t, database, "user-1", 2)
+	jobB := seedJob(t, database, "user-1", 2)
 	s.Schedule(context.Background())
-	checkJobQueuedWithReason(t, database, jobSplitID, "Insufficient GPUs on a single node (requested 2, max available 1)")
+	checkJobState(t, database, jobA, models.JobStateAllocated, "frag-A")
+	checkJobState(t, database, jobB, models.JobStateAllocated, "frag-B")
+
+	// Job needs 2. Total available 2, but split 1+1.
+	jobFragID := seedJob(t, database, "user-1", 2)
+	s.Schedule(context.Background())
+	checkJobQueuedWithReason(t, database, jobFragID, "Waiting for a single node to have 2 free GPUs (fragmented: 2 total free across nodes)")
 }
 
 func seedNode(t *testing.T, d *db.DB, id string, gpuCount int) {
@@ -106,7 +164,7 @@ func seedNode(t *testing.T, d *db.DB, id string, gpuCount int) {
 }
 
 func seedJob(t *testing.T, d *db.DB, owner string, gpus int) string {
-	id := "job-" + time.Now().String()
+	id := fmt.Sprintf("job-%d", time.Now().UnixNano())
 	_, err := d.Exec(`
 		INSERT INTO jobs (id, owner_id, state, priority, gpu_count, command, cwd, env_json, created_at, queued_at)
 		VALUES (?, ?, ?, 0, ?, 'echo', '/tmp', '{}', ?, ?)
