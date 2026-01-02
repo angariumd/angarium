@@ -25,14 +25,33 @@ AGENT_PID=$!
 # Wait for agent to heartbeat
 sleep 7
 
-echo "Checking nodes..."
-./bin/cli nodes
+echo "Checking cluster status..."
+./bin/cli status
 
-echo "Submitting job..."
+echo "Submitting job (2 GPUs)..."
 ./bin/cli submit --gpus 2 --cwd /tmp -- python -c "print('hello Angarium')"
 
 echo "Checking queue..."
 ./bin/cli queue
+
+# Wait for scheduler to run
+echo "Waiting for scheduler..."
+sleep 3
+
+echo "Checking queue after allocation..."
+./bin/cli queue
+
+echo "Submitting a job that is too large (10 GPUs)..."
+./bin/cli submit --gpus 10 --cwd /tmp -- python -c "print('too big')"
+
+echo "Waiting for scheduler..."
+sleep 3
+
+echo "Inspecting queued job..."
+./bin/cli queue # Show list with reason
+# Get the ID of the large job (it will be the last one)
+LARGE_JOB_ID=$(./bin/cli queue | grep "too big" | awk '{print $1}')
+./bin/cli inspect $LARGE_JOB_ID
 
 # Clean up
 echo "Cleaning up..."

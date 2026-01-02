@@ -85,6 +85,27 @@ func (d *DB) Init() error {
 		node_id TEXT,
 		payload_json TEXT
 	);
+
+	CREATE TABLE IF NOT EXISTS allocations (
+		id TEXT PRIMARY KEY,
+		job_id TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		status TEXT NOT NULL,
+		created_at DATETIME NOT NULL,
+		released_at DATETIME,
+		FOREIGN KEY (job_id) REFERENCES jobs(id),
+		FOREIGN KEY (node_id) REFERENCES nodes(id)
+	);
+
+	CREATE TABLE IF NOT EXISTS gpu_leases (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		gpu_id TEXT NOT NULL,
+		allocation_id TEXT NOT NULL,
+		leased_at DATETIME NOT NULL,
+		expires_at DATETIME NOT NULL,
+		FOREIGN KEY (gpu_id) REFERENCES gpus(id),
+		FOREIGN KEY (allocation_id) REFERENCES allocations(id) ON DELETE CASCADE
+	);
 	`
 
 	_, err := d.conn.Exec(schema)

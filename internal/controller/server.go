@@ -160,7 +160,7 @@ func (s *Server) handleJobSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleJobList(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query("SELECT id, owner_id, state, priority, gpu_count, command, cwd, created_at FROM jobs ORDER BY created_at DESC")
+	rows, err := s.db.Query("SELECT id, owner_id, state, priority, gpu_count, command, cwd, created_at, reason FROM jobs ORDER BY created_at DESC")
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
@@ -170,7 +170,7 @@ func (s *Server) handleJobList(w http.ResponseWriter, r *http.Request) {
 	var jobs []models.Job
 	for rows.Next() {
 		var j models.Job
-		if err := rows.Scan(&j.ID, &j.OwnerID, &j.State, &j.Priority, &j.GPUCount, &j.Command, &j.CWD, &j.CreatedAt); err != nil {
+		if err := rows.Scan(&j.ID, &j.OwnerID, &j.State, &j.Priority, &j.GPUCount, &j.Command, &j.CWD, &j.CreatedAt, &j.Reason); err != nil {
 			http.Error(w, "db error scan", http.StatusInternalServerError)
 			return
 		}

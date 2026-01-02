@@ -64,3 +64,20 @@ type Event struct {
 	NodeID      *string   `json:"node_id,omitempty"`
 	PayloadJSON *string   `json:"payload_json,omitempty"`
 }
+
+type Allocation struct {
+	ID         string     `json:"id"`
+	JobID      string     `json:"job_id"`
+	NodeID     string     `json:"node_id"`
+	Status     string     `json:"status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ReleasedAt *time.Time `json:"released_at,omitempty"`
+}
+
+type GPULease struct {
+	ID           int64     `json:"id"`
+	GPUID        string    `json:"gpu_id"`
+	AllocationID string    `json:"allocation_id"`
+	LeasedAt     time.Time `json:"leased_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}

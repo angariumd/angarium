@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/angariumd/angarium/internal/models"
 	"github.com/spf13/cobra"
@@ -57,7 +58,20 @@ func main() {
 	submitCmd.Flags().StringVar(&cwd, "cwd", "", "Current working directory (mandatory)")
 	submitCmd.MarkFlagRequired("cwd")
 
-	rootCmd.AddCommand(nodesCmd, queueCmd, submitCmd)
+	statusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show cluster status (GPUs capacity and usage)",
+		RunE:  showStatus,
+	}
+
+	inspectCmd := &cobra.Command{
+		Use:   "inspect <job_id>",
+		Short: "Show detailed job information",
+		Args:  cobra.ExactArgs(1),
+		RunE:  inspectJob,
+	}
+
+	rootCmd.AddCommand(nodesCmd, queueCmd, submitCmd, statusCmd, inspectCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -97,11 +111,76 @@ func listQueue(cmd *cobra.Command, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tSTATE\tOWNER\tGPUS\tCOMMAND")
+	fmt.Fprintln(w, "ID\tSTATE\tOWNER\tGPUS\tCOMMAND\tREASON")
 	for _, j := range jobs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", j.ID[:8], j.State, j.OwnerID, j.GPUCount, j.Command)
+		reason := "-"
+		if j.Reason != nil {
+			reason = *j.Reason
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n", j.ID[:8], j.State, j.OwnerID, j.GPUCount, j.Command, reason)
 	}
 	return w.Flush()
+}
+
+func showStatus(cmd *cobra.Command, args []string) error {
+	resp, err := request("GET", "/v1/nodes", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var nodes []models.Node
+	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
+		return err
+	}
+
+	// The nodes endpoint currently only returns node info.
+	// We need another one or update handleNodeList to include GPUs.
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NODE ID\tSTATUS\tADDR")
+	for _, n := range nodes {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", n.ID, n.Status, n.Addr)
+	}
+	return w.Flush()
+}
+
+func inspectJob(cmd *cobra.Command, args []string) error {
+	jobID := args[0]
+	resp, err := request("GET", "/v1/jobs?id="+jobID, nil) // Simple query for now
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var jobs []models.Job
+	if err := json.NewDecoder(resp.Body).Decode(&jobs); err != nil {
+		return err
+	}
+
+	var target *models.Job
+	for i := range jobs {
+		if strings.HasPrefix(jobs[i].ID, jobID) {
+			target = &jobs[i]
+			break
+		}
+	}
+
+	if target == nil {
+		return fmt.Errorf("job not found: %s", jobID)
+	}
+
+	fmt.Printf("Job ID:     %s\n", target.ID)
+	fmt.Printf("Owner:      %s\n", target.OwnerID)
+	fmt.Printf("State:      %s\n", target.State)
+	fmt.Printf("GPU Count:  %d\n", target.GPUCount)
+	fmt.Printf("Command:    %s\n", target.Command)
+	fmt.Printf("CWD:        %s\n", target.CWD)
+	fmt.Printf("Created:    %s\n", target.CreatedAt.Format(time.RFC3339))
+	if target.Reason != nil {
+		fmt.Printf("Reason:     %s\n", *target.Reason)
+	}
+	return nil
 }
 
 func submitJob(gpuCount int, cwd, command string) error {
