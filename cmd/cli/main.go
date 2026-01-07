@@ -21,16 +21,40 @@ var (
 )
 
 func main() {
-	controllerURL = os.Getenv("GPU_CONTROLLER")
+	controllerURL = os.Getenv("ANGARIUM_CONTROLLER")
 	if controllerURL == "" {
 		controllerURL = "http://localhost:8080"
 	}
-	token = os.Getenv("GPU_TOKEN")
+	token = os.Getenv("ANGARIUM_TOKEN")
 	if token == "" {
-		token = "sam-secret-token" // Default for MVP seed
+		token = "sam-secret-token" // Default developer token
 	}
 
-	rootCmd := &cobra.Command{Use: "cli"}
+	rootCmd := &cobra.Command{Use: "angarium"}
+
+	psCmd := &cobra.Command{
+		Use:   "ps",
+		Short: "List running jobs",
+		RunE:  listRunningJobs,
+	}
+
+	var follow bool
+	logsCmd := &cobra.Command{
+		Use:   "logs <job_id>",
+		Short: "Print the logs for a job",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return showLogs(args[0], follow)
+		},
+	}
+	logsCmd.Flags().BoolVarP(&follow, "follow", "f", false, "Specify if the logs should be streamed")
+
+	cancelCmd := &cobra.Command{
+		Use:   "cancel <job_id>",
+		Short: "Cancel a job",
+		Args:  cobra.ExactArgs(1),
+		RunE:  cancelJob,
+	}
 
 	nodesCmd := &cobra.Command{
 		Use:   "nodes",
@@ -71,7 +95,7 @@ func main() {
 		RunE:  inspectJob,
 	}
 
-	rootCmd.AddCommand(nodesCmd, queueCmd, submitCmd, statusCmd, inspectCmd)
+	rootCmd.AddCommand(nodesCmd, queueCmd, submitCmd, statusCmd, inspectCmd, psCmd, logsCmd, cancelCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -145,9 +169,33 @@ func showStatus(cmd *cobra.Command, args []string) error {
 	return w.Flush()
 }
 
+func resolveJobID(prefix string) (string, error) {
+	resp, err := request("GET", "/v1/jobs", nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var jobs []models.Job
+	if err := json.NewDecoder(resp.Body).Decode(&jobs); err != nil {
+		return "", err
+	}
+
+	for _, j := range jobs {
+		if strings.HasPrefix(j.ID, prefix) {
+			return j.ID, nil
+		}
+	}
+	return "", fmt.Errorf("job not found: %s", prefix)
+}
+
 func inspectJob(cmd *cobra.Command, args []string) error {
-	jobID := args[0]
-	resp, err := request("GET", "/v1/jobs?id="+jobID, nil) // Simple query for now
+	fullID, err := resolveJobID(args[0])
+	if err != nil {
+		return err
+	}
+
+	resp, err := request("GET", "/v1/jobs", nil)
 	if err != nil {
 		return err
 	}
@@ -158,29 +206,31 @@ func inspectJob(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var target *models.Job
-	for i := range jobs {
-		if strings.HasPrefix(jobs[i].ID, jobID) {
-			target = &jobs[i]
-			break
+	for _, target := range jobs {
+		if target.ID == fullID {
+			fmt.Printf("Job ID:     %s\n", target.ID)
+			fmt.Printf("Owner:      %s\n", target.OwnerID)
+			fmt.Printf("State:      %s\n", target.State)
+			fmt.Printf("GPU Count:  %d\n", target.GPUCount)
+			fmt.Printf("Command:    %s\n", target.Command)
+			fmt.Printf("CWD:        %s\n", target.CWD)
+			fmt.Printf("Created:    %s\n", target.CreatedAt.Format(time.RFC3339))
+			if target.StartedAt != nil {
+				fmt.Printf("Started:    %s\n", target.StartedAt.Format(time.RFC3339))
+			}
+			if target.FinishedAt != nil {
+				fmt.Printf("Finished:   %s\n", target.FinishedAt.Format(time.RFC3339))
+			}
+			if target.ExitCode != nil {
+				fmt.Printf("Exit Code:  %d\n", *target.ExitCode)
+			}
+			if target.Reason != nil {
+				fmt.Printf("Reason:     %s\n", *target.Reason)
+			}
+			return nil
 		}
 	}
-
-	if target == nil {
-		return fmt.Errorf("job not found: %s", jobID)
-	}
-
-	fmt.Printf("Job ID:     %s\n", target.ID)
-	fmt.Printf("Owner:      %s\n", target.OwnerID)
-	fmt.Printf("State:      %s\n", target.State)
-	fmt.Printf("GPU Count:  %d\n", target.GPUCount)
-	fmt.Printf("Command:    %s\n", target.Command)
-	fmt.Printf("CWD:        %s\n", target.CWD)
-	fmt.Printf("Created:    %s\n", target.CreatedAt.Format(time.RFC3339))
-	if target.Reason != nil {
-		fmt.Printf("Reason:     %s\n", *target.Reason)
-	}
-	return nil
+	return fmt.Errorf("job not found: %s", fullID)
 }
 
 func submitJob(gpuCount int, cwd, command string) error {
@@ -208,6 +258,75 @@ func submitJob(gpuCount int, cwd, command string) error {
 	return nil
 }
 
+func listRunningJobs(cmd *cobra.Command, args []string) error {
+	resp, err := request("GET", "/v1/jobs", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var jobs []models.Job
+	if err := json.NewDecoder(resp.Body).Decode(&jobs); err != nil {
+		return err
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tSTATE\tOWNER\tGPUS\tCOMMAND")
+	for _, j := range jobs {
+		if j.State == models.JobStateRunning || j.State == models.JobStateStarting {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", j.ID[:8], j.State, j.OwnerID, j.GPUCount, j.Command)
+		}
+	}
+	return w.Flush()
+}
+
+func showLogs(jobID string, follow bool) error {
+	fullID, err := resolveJobID(jobID)
+	if err != nil {
+		return err
+	}
+
+	path := fmt.Sprintf("/v1/jobs/%s/logs", fullID)
+	if follow {
+		path += "?follow=true"
+	}
+
+	resp, err := request("GET", path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("logs failed (%d): %s", resp.StatusCode, string(b))
+	}
+
+	_, err = io.Copy(os.Stdout, resp.Body)
+	return err
+}
+
+func cancelJob(cmd *cobra.Command, args []string) error {
+	fullID, err := resolveJobID(args[0])
+	if err != nil {
+		return err
+	}
+
+	resp, err := request("POST", fmt.Sprintf("/v1/jobs/%s/cancel", fullID), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("cancel failed (%d): %s", resp.StatusCode, string(b))
+	}
+
+	fmt.Printf("Job %s cancel request sent.\n", fullID)
+	return nil
+}
+
 func request(method, path string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(method, controllerURL+path, body)
 	if err != nil {
@@ -223,7 +342,7 @@ func request(method, path string, body io.Reader) (*http.Response, error) {
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("unauthorized: check your GPU_TOKEN")
+		return nil, fmt.Errorf("unauthorized: check your ANGARIUM_TOKEN")
 	}
 
 	return resp, nil

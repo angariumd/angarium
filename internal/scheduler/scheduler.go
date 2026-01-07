@@ -1,9 +1,12 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/angariumd/angarium/internal/db"
@@ -22,7 +25,7 @@ func New(db *db.DB) *Scheduler {
 }
 
 func (s *Scheduler) Run(ctx context.Context, interval time.Duration) {
-	// Run once immediately on startup for recovery
+	// Initial passes for recovery and pending jobs
 	s.CleanupLeases(ctx)
 	s.Schedule(ctx)
 
@@ -229,7 +232,57 @@ func (s *Scheduler) allocateJob(job models.Job, nodeID string, gpus []models.GPU
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// 4. Notify Agent
+	go s.notifyAgentLaunch(job, nodeID, gpus)
+
+	return nil
+}
+
+func (s *Scheduler) notifyAgentLaunch(job models.Job, nodeID string, gpus []models.GPU) {
+	// Fetch node address
+	var addr string
+	err := s.db.QueryRow("SELECT addr FROM nodes WHERE id = ?", nodeID).Scan(&addr)
+	if err != nil {
+		log.Printf("Scheduler: error fetching node addr for %s: %v", nodeID, err)
+		return
+	}
+
+	if addr == "" {
+		log.Printf("Scheduler: node %s has no address", nodeID)
+		return
+	}
+
+	gpuUUIDs := make([]string, len(gpus))
+	for i, g := range gpus {
+		gpuUUIDs[i] = g.UUID
+	}
+
+	reqBody := struct {
+		Job      models.Job `json:"job"`
+		GPUUUIDs []string   `json:"gpu_uuids"`
+	}{
+		Job:      job,
+		GPUUUIDs: gpuUUIDs,
+	}
+
+	body, _ := json.Marshal(reqBody)
+	url := fmt.Sprintf("%s/v1/agent/launch", addr)
+
+	// Send launch command to the target node
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		log.Printf("Scheduler: failed to notify agent %s at %s: %v", nodeID, addr, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		log.Printf("Scheduler: agent %s at %s rejected launch: %d", nodeID, addr, resp.StatusCode)
+	}
 }
 
 func (s *Scheduler) updateJobReason(jobID string, reason string) error {

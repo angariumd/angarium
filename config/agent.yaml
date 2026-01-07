@@ -1,3 +1,4 @@
 controller_url: "http://localhost:8080"
-shared_token: "agent-secret-token"
+shared_token: "agent-secret"
 node_id: "node-local"
+addr: "http://localhost:8081"

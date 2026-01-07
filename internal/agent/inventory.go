@@ -13,6 +13,11 @@ type FakeGPUProvider struct {
 }
 
 func (f *FakeGPUProvider) GetGPUs() ([]models.GPU, error) {
+	for i := range f.GPUs {
+		// Mock bit of usage
+		f.GPUs[i].Utilization = (i + 1) * 10
+		f.GPUs[i].MemoryUsedMB = (i + 1) * 512
+	}
 	return f.GPUs, nil
 }
 

@@ -17,14 +17,17 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	// Performance tuning
-	_, err = db.Exec("PRAGMA journal_mode=WAL;")
-	if err != nil {
-		return nil, fmt.Errorf("setting wal mode: %w", err)
+	// Optimization pragmas for SQLite
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL;",
+		"PRAGMA synchronous=NORMAL;",
+		"PRAGMA busy_timeout=5000;",
+		"PRAGMA foreign_keys=ON;",
 	}
-	_, err = db.Exec("PRAGMA foreign_keys=ON;")
-	if err != nil {
-		return nil, fmt.Errorf("enabling foreign keys: %w", err)
+	for _, p := range pragmas {
+		if _, err := db.Exec(p); err != nil {
+			return nil, fmt.Errorf("setting pragma %q: %w", p, err)
+		}
 	}
 
 	return &DB{conn: db}, nil
@@ -73,6 +76,9 @@ func (d *DB) Init() error {
 		env_json TEXT NOT NULL,
 		created_at DATETIME NOT NULL,
 		queued_at DATETIME NOT NULL,
+		started_at DATETIME,
+		finished_at DATETIME,
+		exit_code INTEGER,
 		reason TEXT,
 		FOREIGN KEY (owner_id) REFERENCES users(id)
 	);

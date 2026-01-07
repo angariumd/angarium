@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strings"
 
@@ -35,10 +36,11 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// In MVP, we compare against token_hash (just string comparison for now)
+		// Verify token against user records
 		var user models.User
 		err := a.db.QueryRow("SELECT id, name FROM users WHERE token_hash = ?", token).Scan(&user.ID, &user.Name)
 		if err != nil {
+			log.Printf("Auth: invalid token %q for path %s: %v", token, r.URL.Path, err)
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}

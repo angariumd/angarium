@@ -15,14 +15,16 @@ type Node struct {
 }
 
 type GPU struct {
-	ID         string    `json:"id"`
-	NodeID     string    `json:"node_id"`
-	Idx        int       `json:"idx"`
-	UUID       string    `json:"uuid"`
-	Name       string    `json:"name"`
-	MemoryMB   int       `json:"memory_mb"`
-	Health     string    `json:"health"`
-	LastSeenAt time.Time `json:"last_seen_at"`
+	ID           string    `json:"id"`
+	NodeID       string    `json:"node_id"`
+	Idx          int       `json:"idx"`
+	UUID         string    `json:"uuid"`
+	Name         string    `json:"name"`
+	MemoryMB     int       `json:"memory_mb"`
+	Health       string    `json:"health"`
+	Utilization  int       `json:"utilization"` // 0-100
+	MemoryUsedMB int       `json:"memory_used_mb"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
 }
 
 type User struct {
@@ -45,17 +47,20 @@ const (
 )
 
 type Job struct {
-	ID        string    `json:"id"`
-	OwnerID   string    `json:"owner_id"`
-	State     JobState  `json:"state"`
-	Priority  int       `json:"priority"`
-	GPUCount  int       `json:"gpu_count"`
-	Command   string    `json:"command"`
-	CWD       string    `json:"cwd"`
-	EnvJSON   string    `json:"env_json"`
-	CreatedAt time.Time `json:"created_at"`
-	QueuedAt  time.Time `json:"queued_at"`
-	Reason    *string   `json:"reason,omitempty"`
+	ID         string     `json:"id"`
+	OwnerID    string     `json:"owner_id"`
+	State      JobState   `json:"state"`
+	Priority   int        `json:"priority"`
+	GPUCount   int        `json:"gpu_count"`
+	Command    string     `json:"command"`
+	CWD        string     `json:"cwd"`
+	EnvJSON    string     `json:"env_json"`
+	CreatedAt  time.Time  `json:"created_at"`
+	QueuedAt   time.Time  `json:"queued_at"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	ExitCode   *int       `json:"exit_code,omitempty"`
+	Reason     *string    `json:"reason,omitempty"`
 }
 
 type Event struct {

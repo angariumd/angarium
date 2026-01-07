@@ -23,6 +23,7 @@ type AgentConfig struct {
 	ControllerURL string `yaml:"controller_url"`
 	SharedToken   string `yaml:"shared_token"`
 	NodeID        string `yaml:"node_id"`
+	Addr          string `yaml:"addr"`
 }
 
 func LoadControllerConfig(path string) (*ControllerConfig, error) {
