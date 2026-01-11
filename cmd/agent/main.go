@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/angariumd/angarium/internal/agent"
@@ -14,6 +17,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config/agent.yaml", "path to agent config")
+	mockFlag := flag.Bool("mock", false, "force mock GPU provider (for development only)")
 	flag.Parse()
 
 	cfg, err := config.LoadAgentConfig(*configPath)
@@ -21,25 +25,56 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
+	// For MVP: treat all internal HTTPS as insecure if we are using self-signed
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+
 	// Initialize GPU inventory and agent
 	nodeID, _ := os.Hostname()
 	if cfg.NodeID != "" {
 		nodeID = cfg.NodeID
 	}
 
-	gpuProvider := agent.NewFakeGPUProvider(nodeID)
+	var gpuProvider agent.GPUProvider
+	if *mockFlag {
+		log.Println("WARNING: Running in MOCK mode with simulated GPUs. DO NOT USE IN PRODUCTION.")
+		gpuProvider = agent.NewMockGPUProvider(nodeID)
+	} else {
+		// Strict production path
+		if _, err := exec.LookPath("nvidia-smi"); err != nil {
+			log.Fatal("FATAL: nvidia-smi not found. Compute nodes require NVIDIA drivers. Use --mock for testing.")
+		}
+
+		// Verify it actually works
+		if err := exec.Command("nvidia-smi", "-L").Run(); err != nil {
+			log.Fatal("FATAL: nvidia-smi found but failed to communicate with GPUs. Check drivers.")
+		}
+
+		gpuProvider = &agent.NvidiaGPUProvider{}
+		log.Printf("Successfully initialized real NvidiaGPUProvider")
+	}
+
 	a := agent.NewAgent(nodeID, cfg.ControllerURL, gpuProvider, "v0.1.0", cfg.Addr, cfg.SharedToken)
 
 	fmt.Printf("Angarium Agent starting (Node ID: %s, Addr: %s)...\n", nodeID, cfg.Addr)
 	a.StartHeartbeat(5 * time.Second)
 
-	// Initialize API server on designated port
-	port := "8081"
-
-	// Just use 8081 for now
+	// Initialize API server
 	go func() {
-		log.Printf("Agent API listening on :%s", port)
-		if err := http.ListenAndServe(":"+port, a.Routes()); err != nil {
+		listenAddr := cfg.Addr
+		if strings.HasPrefix(listenAddr, "http://") {
+			listenAddr = strings.TrimPrefix(listenAddr, "http://")
+		} else if strings.HasPrefix(listenAddr, "https://") {
+			listenAddr = strings.TrimPrefix(listenAddr, "https://")
+		}
+
+		log.Printf("Agent API listening on %s (TLS: %v)", listenAddr, cfg.CertPath != "")
+		var err error
+		if cfg.CertPath != "" && cfg.KeyPath != "" {
+			err = http.ListenAndServeTLS(listenAddr, cfg.CertPath, cfg.KeyPath, a.Routes())
+		} else {
+			err = http.ListenAndServe(listenAddr, a.Routes())
+		}
+		if err != nil {
 			log.Fatalf("agent server failed: %v", err)
 		}
 	}()

@@ -24,7 +24,7 @@ sleep 2
 
 # Start Agent
 echo "Starting Agent..."
-./bin/angarium-agent --config config/agent.yaml > logs/agent.log 2>&1 &
+./bin/angarium-agent --config config/agent.yaml --mock > logs/agent.log 2>&1 &
 AGENT_PID=$!
 
 # Wait for agent to heartbeat
@@ -42,7 +42,7 @@ echo "Submitted job: $JOB_ID"
 echo "Waiting for scheduler to allocate job..."
 sleep 3
 
-echo "Checking 'gpu ps' (should show job starting/running)..."
+echo "Checking 'angarium ps' (should show job starting/running)..."
 ./bin/angarium ps | grep "$(echo $JOB_ID | cut -c1-8)" || (echo "Job not found in ps output" && exit 1)
 
 echo "Waiting for job completion..."
@@ -65,7 +65,19 @@ echo "Canceling job..."
 
 sleep 2
 echo "Verifying job is CANCELED..."
-./bin/angarium inspect $CANCEL_JOB_ID | grep "State:      CANCELED" || (echo "Job not in CANCELED state" && exit 1)
+# Give it a moment to sync terminal state if needed
+for i in {1..5}; do
+    if ./bin/angarium inspect $CANCEL_JOB_ID | grep -q "State:.*CANCELED"; then
+        echo "Job successfully canceled"
+        break
+    fi
+    if [ $i -eq 5 ]; then
+        echo "Job not in CANCELED state after 5 seconds:"
+        ./bin/angarium inspect $CANCEL_JOB_ID
+        exit 1
+    fi
+    sleep 1
+done
 
 echo "Verifying GPUs are released (should show 2/2 free)..."
 FREE_GPUS=$(./bin/angarium status | grep "node-local" | awk '{print $4}' | cut -d'/' -f1)

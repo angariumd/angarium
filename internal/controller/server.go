@@ -432,8 +432,8 @@ func (s *Server) handleJobStateUpdate(w http.ResponseWriter, r *http.Request) {
 		args = append(args, now, req.ExitCode)
 	}
 
-	query += " WHERE id = ?"
-	args = append(args, jobID)
+	query += " WHERE id = ? AND state NOT IN (?, ?, ?, ?)"
+	args = append(args, jobID, models.JobStateSucceeded, models.JobStateFailed, models.JobStateCanceled, models.JobStateLost)
 
 	if _, err := tx.Exec(query, args...); err != nil {
 		http.Error(w, "db error job update", http.StatusInternalServerError)
@@ -587,19 +587,27 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if addr != "" {
-		// Notify agent
-		url := fmt.Sprintf("%s/v1/agent/terminate", addr)
-		reqBody := map[string]string{"job_id": jobID}
-		body, _ := json.Marshal(reqBody)
-		req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Agent-Token", s.AgentToken)
-		http.DefaultClient.Do(req)
-	}
-
-	// Update job record and release resources
+	// 1. Update job record and release resources FIRST to block races
+	log.Printf("Canceling job %s (owner: %s, state: %s)", jobID, user.ID, state)
 	s.markJobCanceled(jobID)
+
+	if addr != "" {
+		// 2. Notify agent SECOND
+		go func() {
+			url := fmt.Sprintf("%s/v1/agent/terminate", addr)
+			reqBody := map[string]string{"job_id": jobID}
+			body, _ := json.Marshal(reqBody)
+			req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Agent-Token", s.AgentToken)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				log.Printf("Cancel notify failed for %s: %v", jobID, err)
+				return
+			}
+			resp.Body.Close()
+		}()
+	}
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -607,17 +615,26 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) markJobCanceled(jobID string) {
 	tx, err := s.db.Begin()
 	if err != nil {
+		log.Printf("Error starting transaction for cancel %s: %v", jobID, err)
 		return
 	}
 	defer tx.Rollback()
 
 	now := time.Now()
-	_, _ = tx.Exec("UPDATE jobs SET state = ?, finished_at = ? WHERE id = ?", models.JobStateCanceled, now, jobID)
+	// Overwrite any non-terminal state
+	_, err = tx.Exec("UPDATE jobs SET state = ?, finished_at = ? WHERE id = ?", models.JobStateCanceled, now, jobID)
+	if err != nil {
+		log.Printf("Error updating job %s to CANCELED: %v", jobID, err)
+		return
+	}
+
 	_, _ = tx.Exec(`
 		DELETE FROM gpu_leases 
 		WHERE allocation_id IN (SELECT id FROM allocations WHERE job_id = ?)
 	`, jobID)
 	_, _ = tx.Exec("UPDATE allocations SET status = ?, released_at = ? WHERE job_id = ?", string(models.JobStateCanceled), now, jobID)
 
-	tx.Commit()
+	if err := tx.Commit(); err != nil {
+		log.Printf("Error committing cancel for %s: %v", jobID, err)
+	}
 }

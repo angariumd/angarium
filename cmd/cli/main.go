@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/angariumd/angarium/internal/config"
 	"github.com/angariumd/angarium/internal/models"
 	"github.com/spf13/cobra"
 )
@@ -21,11 +23,21 @@ var (
 )
 
 func main() {
+	// Load config from file
+	cfg, _ := config.LoadCLIConfig()
+
 	controllerURL = os.Getenv("ANGARIUM_CONTROLLER")
+	if controllerURL == "" {
+		controllerURL = cfg.ControllerURL
+	}
 	if controllerURL == "" {
 		controllerURL = "http://localhost:8080"
 	}
+
 	token = os.Getenv("ANGARIUM_TOKEN")
+	if token == "" {
+		token = cfg.Token
+	}
 	if token == "" {
 		token = "sam-secret-token" // Default developer token
 	}
@@ -95,7 +107,33 @@ func main() {
 		RunE:  inspectJob,
 	}
 
-	rootCmd.AddCommand(nodesCmd, queueCmd, submitCmd, statusCmd, inspectCmd, psCmd, logsCmd, cancelCmd)
+	loginCmd := &cobra.Command{
+		Use:   "login <token>",
+		Short: "Login with an API token",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, _ := config.LoadCLIConfig()
+			cfg.Token = args[0]
+			cfg.ControllerURL = controllerURL
+			if err := config.SaveCLIConfig(cfg); err != nil {
+				return err
+			}
+			fmt.Printf("Logged in to %s\n", controllerURL)
+			return nil
+		},
+	}
+
+	whoamiCmd := &cobra.Command{
+		Use:   "whoami",
+		Short: "Show current user and controller",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Printf("Controller: %s\n", controllerURL)
+			fmt.Printf("Token:      %s... (prefix)\n", token[:min(len(token), 8)])
+			return nil
+		},
+	}
+
+	rootCmd.AddCommand(nodesCmd, queueCmd, submitCmd, statusCmd, inspectCmd, psCmd, logsCmd, cancelCmd, loginCmd, whoamiCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -327,6 +365,13 @@ func cancelJob(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func request(method, path string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(method, controllerURL+path, body)
 	if err != nil {
@@ -335,7 +380,11 @@ func request(method, path string, body io.Reader) (*http.Response, error) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

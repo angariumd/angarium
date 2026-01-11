@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -23,6 +24,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
+
+	// For MVP: treat all internal HTTPS as insecure if we are using self-signed
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 
 	database, err := db.Open(cfg.DBPath)
 	if err != nil {
@@ -55,6 +59,10 @@ func main() {
 	// Start reconciliation loop
 	server.StartReconciliationLoop(30 * time.Second)
 
-	fmt.Printf("Angarium Controller listening on %s\n", cfg.Addr)
-	log.Fatal(http.ListenAndServe(cfg.Addr, server.Routes()))
+	fmt.Printf("Angarium Controller listening on %s (TLS: %v)\n", cfg.Addr, cfg.CertPath != "")
+	if cfg.CertPath != "" && cfg.KeyPath != "" {
+		log.Fatal(http.ListenAndServeTLS(cfg.Addr, cfg.CertPath, cfg.KeyPath, server.Routes()))
+	} else {
+		log.Fatal(http.ListenAndServe(cfg.Addr, server.Routes()))
+	}
 }

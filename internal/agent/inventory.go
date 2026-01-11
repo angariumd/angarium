@@ -8,11 +8,11 @@ type GPUProvider interface {
 	GetGPUs() ([]models.GPU, error)
 }
 
-type FakeGPUProvider struct {
+type MockGPUProvider struct {
 	GPUs []models.GPU
 }
 
-func (f *FakeGPUProvider) GetGPUs() ([]models.GPU, error) {
+func (f *MockGPUProvider) GetGPUs() ([]models.GPU, error) {
 	for i := range f.GPUs {
 		// Mock bit of usage
 		f.GPUs[i].Utilization = (i + 1) * 10
@@ -21,20 +21,20 @@ func (f *FakeGPUProvider) GetGPUs() ([]models.GPU, error) {
 	return f.GPUs, nil
 }
 
-func NewFakeGPUProvider(nodeID string) *FakeGPUProvider {
-	return &FakeGPUProvider{
+func NewMockGPUProvider(nodeID string) *MockGPUProvider {
+	return &MockGPUProvider{
 		GPUs: []models.GPU{
 			{
-				UUID:     "GPU-fake-01",
+				UUID:     "GPU-mock-01",
 				Idx:      0,
-				Name:     "NVIDIA A100-SXM4-40GB (Fake)",
+				Name:     "NVIDIA A100-SXM4-40GB (Mock)",
 				MemoryMB: 40960,
 				Health:   "OK",
 			},
 			{
-				UUID:     "GPU-fake-02",
+				UUID:     "GPU-mock-02",
 				Idx:      1,
-				Name:     "NVIDIA A100-SXM4-40GB (Fake)",
+				Name:     "NVIDIA A100-SXM4-40GB (Mock)",
 				MemoryMB: 40960,
 				Health:   "OK",
 			},
