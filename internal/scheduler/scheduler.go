@@ -17,11 +17,15 @@ import (
 const DefaultLeaseDuration = 1 * time.Minute
 
 type Scheduler struct {
-	db *db.DB
+	db         *db.DB
+	AgentToken string
 }
 
-func New(db *db.DB) *Scheduler {
-	return &Scheduler{db: db}
+func New(db *db.DB, agentToken string) *Scheduler {
+	return &Scheduler{
+		db:         db,
+		AgentToken: agentToken,
+	}
 }
 
 func (s *Scheduler) Run(ctx context.Context, interval time.Duration) {
@@ -273,7 +277,10 @@ func (s *Scheduler) notifyAgentLaunch(job models.Job, nodeID string, gpus []mode
 	url := fmt.Sprintf("%s/v1/agent/launch", addr)
 
 	// Send launch command to the target node
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", s.AgentToken)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("Scheduler: failed to notify agent %s at %s: %v", nodeID, addr, err)
 		return

@@ -28,7 +28,7 @@ func main() {
 	}
 
 	gpuProvider := agent.NewFakeGPUProvider(nodeID)
-	a := agent.NewAgent(nodeID, cfg.ControllerURL, gpuProvider, "v0.1.0", cfg.Addr)
+	a := agent.NewAgent(nodeID, cfg.ControllerURL, gpuProvider, "v0.1.0", cfg.Addr, cfg.SharedToken)
 
 	fmt.Printf("Angarium Agent starting (Node ID: %s, Addr: %s)...\n", nodeID, cfg.Addr)
 	a.StartHeartbeat(5 * time.Second)

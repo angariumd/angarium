@@ -43,14 +43,17 @@ func main() {
 	}
 
 	authenticator := auth.NewAuthenticator(database)
-	server := controller.NewServer(database, authenticator)
+	server := controller.NewServer(database, authenticator, cfg.SharedToken)
 
 	// Start scheduler
-	sched := scheduler.New(database)
+	sched := scheduler.New(database, cfg.SharedToken)
 	go sched.Run(context.Background(), 2*time.Second)
 
 	// Start stale node detector
 	server.StartStaleNodeDetector(10 * time.Second)
+
+	// Start reconciliation loop
+	server.StartReconciliationLoop(30 * time.Second)
 
 	fmt.Printf("Angarium Controller listening on %s\n", cfg.Addr)
 	log.Fatal(http.ListenAndServe(cfg.Addr, server.Routes()))

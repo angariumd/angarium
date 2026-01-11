@@ -1,18 +1,22 @@
 #!/bin/bash
 set -e
+set -x
+
+export ANGARIUM_CONTROLLER="http://localhost:8080"
+export ANGARIUM_TOKEN="sam-secret-token"
 
 # Build all components
 echo "Building components..."
 make build
 
 # Clean up existing processes if any
-killall controller agent 2>/dev/null || true
+killall angarium-controller angarium-agent 2>/dev/null || true
 rm -f angarium.db angarium.db-wal angarium.db-shm logs/*.log
 mkdir -p logs
 
 # Start Controller
 echo "Starting Controller..."
-./bin/controller --config config/controller.yaml > logs/controller.log 2>&1 &
+./bin/angarium-controller --config config/controller.yaml > logs/controller.log 2>&1 &
 CONTROLLER_PID=$!
 
 # Wait for controller to start
@@ -20,7 +24,7 @@ sleep 2
 
 # Start Agent
 echo "Starting Agent..."
-./bin/agent --config config/agent.yaml > logs/agent.log 2>&1 &
+./bin/angarium-agent --config config/agent.yaml > logs/agent.log 2>&1 &
 AGENT_PID=$!
 
 # Wait for agent to heartbeat
@@ -39,7 +43,7 @@ echo "Waiting for scheduler to allocate job..."
 sleep 3
 
 echo "Checking 'gpu ps' (should show job starting/running)..."
-./bin/angarium ps | grep "${JOB_ID:0:8}" || (echo "Job not found in ps output" && exit 1)
+./bin/angarium ps | grep "$(echo $JOB_ID | cut -c1-8)" || (echo "Job not found in ps output" && exit 1)
 
 echo "Waiting for job completion..."
 sleep 6
@@ -78,8 +82,9 @@ sleep 1
 echo "Expiring leases in database..."
 sqlite3 angarium.db "UPDATE gpu_leases SET expires_at = datetime('now', '-1 hour');"
 
+# Restart controller
 echo "Restarting controller..."
-./bin/controller --config config/controller.yaml > logs/controller.restart.log 2>&1 &
+./bin/angarium-controller --config config/controller.yaml > logs/controller.restart.log 2>&1 &
 CONTROLLER_PID=$!
 sleep 3
 

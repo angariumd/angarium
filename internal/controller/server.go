@@ -16,23 +16,25 @@ import (
 )
 
 type Server struct {
-	db   *db.DB
-	auth *auth.Authenticator
+	db         *db.DB
+	auth       *auth.Authenticator
+	AgentToken string
 }
 
-func NewServer(db *db.DB, auth *auth.Authenticator) *Server {
+func NewServer(db *db.DB, auth *auth.Authenticator, agentToken string) *Server {
 	return &Server{
-		db:   db,
-		auth: auth,
+		db:         db,
+		auth:       auth,
+		AgentToken: agentToken,
 	}
 }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// Node management
-	mux.HandleFunc("POST /v1/agent/heartbeat", s.handleHeartbeat)
-	mux.HandleFunc("POST /v1/agent/jobs/{id}/state", s.handleJobStateUpdate)
+	// Node management (shared token auth)
+	mux.Handle("POST /v1/agent/heartbeat", s.auth.AgentMiddleware(s.AgentToken, http.HandlerFunc(s.handleHeartbeat)))
+	mux.Handle("POST /v1/agent/jobs/{id}/state", s.auth.AgentMiddleware(s.AgentToken, http.HandlerFunc(s.handleJobStateUpdate)))
 	mux.Handle("GET /v1/nodes", s.auth.Middleware(http.HandlerFunc(s.handleNodeList)))
 
 	// User job control
@@ -55,13 +57,196 @@ func (s *Server) StartStaleNodeDetector(interval time.Duration) {
 
 func (s *Server) detectStaleNodes() {
 	deadline := time.Now().Add(-20 * time.Second)
-	_, err := s.db.Exec(`
-		UPDATE nodes SET status = 'DOWN'
-		WHERE last_heartbeat_at < ? AND status = 'UP'
-	`, deadline)
+
+	// Find nodes that are currently UP but haven't heartbeated recently
+	rows, err := s.db.Query("SELECT id FROM nodes WHERE status = 'UP' AND last_heartbeat_at < ?", deadline)
 	if err != nil {
-		fmt.Printf("Error detecting stale nodes: %v\n", err)
+		log.Printf("Error querying stale nodes: %v", err)
+		return
 	}
+	defer rows.Close()
+
+	var staleNodeIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			staleNodeIDs = append(staleNodeIDs, id)
+		}
+	}
+
+	if len(staleNodeIDs) == 0 {
+		return
+	}
+
+	for _, nodeID := range staleNodeIDs {
+		log.Printf("Node %s is stale, marking DOWN and cleaning up jobs", nodeID)
+		s.handleNodeOffline(nodeID)
+	}
+}
+
+func (s *Server) handleNodeOffline(nodeID string) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		log.Printf("Error starting transaction for node %s offline: %v", nodeID, err)
+		return
+	}
+	defer tx.Rollback()
+
+	now := time.Now()
+
+	// 1. Mark node as DOWN
+	_, err = tx.Exec("UPDATE nodes SET status = 'DOWN' WHERE id = ?", nodeID)
+	if err != nil {
+		log.Printf("Error updating node %s status: %v", nodeID, err)
+		return
+	}
+
+	// 2. Find jobs on this node that are not in terminal state
+	// Transition them to LOST
+	_, err = tx.Exec(`
+		UPDATE jobs SET state = ?, finished_at = ?, reason = 'Node timeout'
+		WHERE id IN (
+			SELECT job_id FROM allocations 
+			WHERE node_id = ? AND released_at IS NULL
+		) AND state NOT IN (?, ?, ?)
+	`, models.JobStateLost, now, nodeID, models.JobStateSucceeded, models.JobStateFailed, models.JobStateCanceled)
+	if err != nil {
+		log.Printf("Error updating jobs for stale node %s: %v", nodeID, err)
+		return
+	}
+
+	// 3. Clear GPU leases for this node
+	_, err = tx.Exec(`
+		DELETE FROM gpu_leases 
+		WHERE allocation_id IN (SELECT id FROM allocations WHERE node_id = ? AND released_at IS NULL)
+	`, nodeID)
+	if err != nil {
+		log.Printf("Error clearing leases for stale node %s: %v", nodeID, err)
+		return
+	}
+
+	// 4. Mark allocations as released/LOST
+	_, err = tx.Exec(`
+		UPDATE allocations SET status = 'LOST', released_at = ?
+		WHERE node_id = ? AND released_at IS NULL
+	`, now, nodeID)
+	if err != nil {
+		log.Printf("Error updating allocations for stale node %s: %v", nodeID, err)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("Error committing node offline cleanup for %s: %v", nodeID, err)
+	}
+}
+
+func (s *Server) StartReconciliationLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for range ticker.C {
+			s.reconcileCluster()
+		}
+	}()
+}
+
+func (s *Server) reconcileCluster() {
+	rows, err := s.db.Query("SELECT id, addr FROM nodes WHERE status = 'UP'")
+	if err != nil {
+		log.Printf("Reconciler: error querying nodes: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, addr string
+		if err := rows.Scan(&id, &addr); err != nil {
+			continue
+		}
+		if addr != "" {
+			go s.reconcileNode(id, addr)
+		}
+	}
+}
+
+func (s *Server) reconcileNode(nodeID, addr string) {
+	req, _ := http.NewRequest("GET", addr+"/v1/agent/running", nil)
+	req.Header.Set("X-Agent-Token", s.AgentToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("Reconciler: failed to contact agent %s at %s: %v", nodeID, addr, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var agentJobs []struct {
+		JobID string `json:"job_id"`
+		PID   int    `json:"pid"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&agentJobs); err != nil {
+		log.Printf("Reconciler: failed to decode agent %s response: %v", nodeID, err)
+		return
+	}
+
+	agentJobIDs := make(map[string]bool)
+	for _, j := range agentJobs {
+		agentJobIDs[j.JobID] = true
+	}
+
+	dbRows, err := s.db.Query(`
+		SELECT j.id FROM jobs j
+		JOIN allocations a ON a.job_id = j.id
+		WHERE a.node_id = ? AND a.released_at IS NULL AND j.state IN (?, ?)
+	`, nodeID, models.JobStateRunning, models.JobStateStarting)
+	if err != nil {
+		log.Printf("Reconciler: error querying DB for node %s: %v", nodeID, err)
+		return
+	}
+	defer dbRows.Close()
+
+	for dbRows.Next() {
+		var jobID string
+		if err := dbRows.Scan(&jobID); err != nil {
+			continue
+		}
+
+		if !agentJobIDs[jobID] {
+			log.Printf("Reconciler: job %s is orphan on node %s, marking LOST", jobID, nodeID)
+			s.markJobLost(jobID, "Process disappeared from agent")
+		}
+		delete(agentJobIDs, jobID)
+	}
+
+	for jobID := range agentJobIDs {
+		log.Printf("Reconciler: job %s is zombie on node %s, killing", jobID, nodeID)
+		s.killZombie(addr, jobID)
+	}
+}
+
+func (s *Server) markJobLost(jobID string, reason string) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+
+	now := time.Now()
+	_, _ = tx.Exec("UPDATE jobs SET state = ?, finished_at = ?, reason = ? WHERE id = ?", models.JobStateLost, now, reason, jobID)
+	_, _ = tx.Exec(`
+		DELETE FROM gpu_leases 
+		WHERE allocation_id IN (SELECT id FROM allocations WHERE job_id = ?)
+	`, jobID)
+	_, _ = tx.Exec("UPDATE allocations SET status = 'LOST', released_at = ? WHERE job_id = ?", now, jobID)
+
+	tx.Commit()
+}
+
+func (s *Server) killZombie(addr, jobID string) {
+	url := addr + "/v1/agent/terminate"
+	body, _ := json.Marshal(map[string]string{"job_id": jobID})
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", s.AgentToken)
+	http.DefaultClient.Do(req)
 }
 
 type HeartbeatRequest struct {
@@ -282,12 +467,30 @@ func (s *Server) handleJobStateUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleJobLogs(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	jobID := r.PathValue("id")
 	follow := r.URL.Query().Get("follow")
 
+	// Verify ownership
+	var ownerID string
+	err := s.db.QueryRow("SELECT owner_id FROM jobs WHERE id = ?", jobID).Scan(&ownerID)
+	if err != nil {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+	if ownerID != user.ID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	// Find node address
 	var addr string
-	err := s.db.QueryRow(`
+	err = s.db.QueryRow(`
 		SELECT n.addr FROM nodes n
 		JOIN allocations a ON a.node_id = n.id
 		WHERE a.job_id = ?
@@ -308,7 +511,9 @@ func (s *Server) handleJobLogs(w http.ResponseWriter, r *http.Request) {
 		url += "?follow=true"
 	}
 
-	resp, err := http.Get(url)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Agent-Token", s.AgentToken)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to contact agent: %v", err), http.StatusInternalServerError)
 		return
@@ -330,13 +535,25 @@ func (s *Server) handleJobLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	jobID := r.PathValue("id")
 
-	// 1. Get job state
+	// Verify ownership
+	var ownerID string
 	var state models.JobState
-	err := s.db.QueryRow("SELECT state FROM jobs WHERE id = ?", jobID).Scan(&state)
+	err := s.db.QueryRow("SELECT owner_id, state FROM jobs WHERE id = ?", jobID).Scan(&ownerID, &state)
 	if err != nil {
 		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+
+	if ownerID != user.ID {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -375,7 +592,10 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 		url := fmt.Sprintf("%s/v1/agent/terminate", addr)
 		reqBody := map[string]string{"job_id": jobID}
 		body, _ := json.Marshal(reqBody)
-		http.Post(url, "application/json", bytes.NewBuffer(body))
+		req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Agent-Token", s.AgentToken)
+		http.DefaultClient.Do(req)
 	}
 
 	// Update job record and release resources
