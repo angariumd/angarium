@@ -2,7 +2,7 @@
 set -e
 set -x
 
-export ANGARIUM_CONTROLLER="http://localhost:8080"
+export ANGARIUM_CONTROLLER="http://localhost:8090"
 export ANGARIUM_TOKEN="sam-secret-token"
 
 # Build all components
@@ -10,13 +10,34 @@ echo "Building components..."
 make build
 
 # Clean up existing processes if any
-killall angarium-controller angarium-agent 2>/dev/null || true
-rm -f angarium.db angarium.db-wal angarium.db-shm logs/*.log
+echo "Cleaning up previous runs..."
+pkill -f angarium-controller || true
+pkill -f angarium-agent || true
+rm -f angarium.db angarium.db-wal angarium.db-shm logs/*.log logs/*.yaml
 mkdir -p logs
+
+# Generate temporary configs with isolated ports
+echo "Generating temporary configs..."
+cat > logs/controller.yaml <<EOF
+addr: "localhost:8090"
+db_path: "angarium.db"
+shared_token: "agent-secret-token"
+users:
+  - id: "user-1"
+    name: "Sam"
+    token: "sam-secret-token"
+EOF
+
+cat > logs/agent.yaml <<EOF
+controller_url: "http://localhost:8090"
+shared_token: "agent-secret-token"
+node_id: "node-local"
+addr: "http://localhost:8091"
+EOF
 
 # Start Controller
 echo "Starting Controller..."
-./bin/angarium-controller --config config/controller.yaml > logs/controller.log 2>&1 &
+./bin/angarium-controller --config logs/controller.yaml > logs/controller.log 2>&1 &
 CONTROLLER_PID=$!
 
 # Wait for controller to start
@@ -24,7 +45,7 @@ sleep 2
 
 # Start Agent
 echo "Starting Agent..."
-./bin/angarium-agent --config config/agent.yaml --mock > logs/agent.log 2>&1 &
+./bin/angarium-agent --config logs/agent.yaml --mock > logs/agent.log 2>&1 &
 AGENT_PID=$!
 
 # Wait for agent to heartbeat
@@ -96,7 +117,7 @@ sqlite3 angarium.db "UPDATE gpu_leases SET expires_at = datetime('now', '-1 hour
 
 # Restart controller
 echo "Restarting controller..."
-./bin/angarium-controller --config config/controller.yaml > logs/controller.restart.log 2>&1 &
+./bin/angarium-controller --config logs/controller.yaml > logs/controller.restart.log 2>&1 &
 CONTROLLER_PID=$!
 sleep 3
 

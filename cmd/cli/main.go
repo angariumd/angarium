@@ -196,9 +196,6 @@ func showStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// The nodes endpoint currently only returns node info.
-	// We need another one or update handleNodeList to include GPUs.
-
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NODE ID\tSTATUS\tADDR\tGPUS (FREE/TOTAL)")
 	for _, n := range nodes {
