@@ -12,7 +12,9 @@ type DB struct {
 }
 
 func Open(path string) (*DB, error) {
-	db, err := sql.Open("sqlite", path)
+	// Use _txlock=immediate to avoid deadlocks during concurrent writes
+	dsn := fmt.Sprintf("%s?_txlock=immediate", path)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}

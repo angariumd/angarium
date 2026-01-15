@@ -1,0 +1,15 @@
+[Unit]
+Description=Angarium GPU Job Queue Controller
+After=network.target
+
+[Service]
+Type=simple
+User=angarium
+Group=angarium
+WorkingDirectory=/var/lib/angarium
+ExecStart=/usr/local/bin/angarium-controller --config /etc/angarium/controller.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

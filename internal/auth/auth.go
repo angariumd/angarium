@@ -50,6 +50,17 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+func (a *Authenticator) AgentMiddleware(sharedToken string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("X-Agent-Token")
+		if token == "" || token != sharedToken {
+			http.Error(w, "unauthorized agent", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func UserFromContext(ctx context.Context) *models.User {
 	user, ok := ctx.Value(userKey).(*models.User)
 	if !ok {

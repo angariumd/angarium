@@ -26,7 +26,7 @@ func TestJobLifecycle(t *testing.T) {
 	defer database.Close()
 	database.Init()
 
-	server := NewServer(database, auth.NewAuthenticator(database))
+	server := NewServer(database, auth.NewAuthenticator(database), "test-token")
 
 	// 0. Seed dependent records
 	database.Exec("INSERT INTO users (id, name, token_hash) VALUES ('user-1', 'User 1', 'token-1')")
@@ -155,7 +155,7 @@ func TestJobCancel(t *testing.T) {
 	defer database.Close()
 	database.Init()
 
-	server := NewServer(database, auth.NewAuthenticator(database))
+	server := NewServer(database, auth.NewAuthenticator(database), "test-token")
 
 	// Seed User
 	database.Exec("INSERT INTO users (id, name, token_hash) VALUES ('user-1', 'User 1', 'token-1')")

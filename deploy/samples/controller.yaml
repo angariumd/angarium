@@ -1,0 +1,7 @@
+addr: ":8080"
+db_path: "/var/lib/angarium/angarium.db"
+shared_token: "change-me-to-a-secure-agent-token"
+users:
+  - id: "admin"
+    name: "Administrator"
+    token: "admin-token-change-me"

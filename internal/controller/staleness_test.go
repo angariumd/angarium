@@ -23,7 +23,7 @@ func TestNodeStaleness(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := NewServer(database, auth.NewAuthenticator(database))
+	server := NewServer(database, auth.NewAuthenticator(database), "test-token")
 
 	// Insert a node that is currently UP but staleness is imminent
 	staleTime := time.Now().Add(-30 * time.Second)

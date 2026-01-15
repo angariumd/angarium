@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -24,6 +25,9 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
+	// For MVP: treat all internal HTTPS as insecure if we are using self-signed
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+
 	database, err := db.Open(cfg.DBPath)
 	if err != nil {
 		log.Fatalf("failed to open db: %v", err)
@@ -43,15 +47,22 @@ func main() {
 	}
 
 	authenticator := auth.NewAuthenticator(database)
-	server := controller.NewServer(database, authenticator)
+	server := controller.NewServer(database, authenticator, cfg.SharedToken)
 
 	// Start scheduler
-	sched := scheduler.New(database)
+	sched := scheduler.New(database, cfg.SharedToken)
 	go sched.Run(context.Background(), 2*time.Second)
 
 	// Start stale node detector
 	server.StartStaleNodeDetector(10 * time.Second)
 
-	fmt.Printf("Angarium Controller listening on %s\n", cfg.Addr)
-	log.Fatal(http.ListenAndServe(cfg.Addr, server.Routes()))
+	// Start reconciliation loop
+	server.StartReconciliationLoop(30 * time.Second)
+
+	fmt.Printf("Angarium Controller listening on %s (TLS: %v)\n", cfg.Addr, cfg.CertPath != "")
+	if cfg.CertPath != "" && cfg.KeyPath != "" {
+		log.Fatal(http.ListenAndServeTLS(cfg.Addr, cfg.CertPath, cfg.KeyPath, server.Routes()))
+	} else {
+		log.Fatal(http.ListenAndServe(cfg.Addr, server.Routes()))
+	}
 }

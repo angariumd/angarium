@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/angariumd/angarium/internal/models"
@@ -21,10 +22,12 @@ type Agent struct {
 	version       string
 	addr          string
 	logDir        string
+	sharedToken   string
+	mu            sync.Mutex
 	activeJobs    map[string]*JobRunner
 }
 
-func NewAgent(nodeID, controllerURL string, gpuProvider GPUProvider, version, addr string) *Agent {
+func NewAgent(nodeID, controllerURL string, gpuProvider GPUProvider, version, addr, sharedToken string) *Agent {
 	return &Agent{
 		nodeID:        nodeID,
 		controllerURL: controllerURL,
@@ -32,6 +35,7 @@ func NewAgent(nodeID, controllerURL string, gpuProvider GPUProvider, version, ad
 		version:       version,
 		addr:          addr,
 		logDir:        "/tmp/angarium/jobs",
+		sharedToken:   sharedToken,
 		activeJobs:    make(map[string]*JobRunner),
 	}
 }
@@ -41,6 +45,7 @@ func (a *Agent) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/agent/launch", a.handleLaunch)
 	mux.HandleFunc("POST /v1/agent/terminate", a.handleTerminate)
 	mux.HandleFunc("GET /v1/agent/jobs/{id}/logs", a.handleLogs)
+	mux.HandleFunc("GET /v1/agent/running", a.handleRunning)
 	return mux
 }
 
@@ -62,7 +67,9 @@ func (a *Agent) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.mu.Lock()
 	a.activeJobs[req.Job.ID] = runner
+	a.mu.Unlock()
 
 	// Report STARTING state to controller
 	go a.updateJobStatus(req.Job.ID, models.JobStateStarting, nil)
@@ -88,7 +95,9 @@ func (a *Agent) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		}
 		exitCode := &code
 
+		a.mu.Lock()
 		delete(a.activeJobs, req.Job.ID)
+		a.mu.Unlock()
 		a.updateJobStatus(req.Job.ID, state, exitCode)
 	}()
 
@@ -104,7 +113,10 @@ func (a *Agent) handleTerminate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.mu.Lock()
 	runner, ok := a.activeJobs[req.JobID]
+	a.mu.Unlock()
+
 	if !ok {
 		http.Error(w, "job not found", http.StatusNotFound)
 		return
@@ -116,6 +128,26 @@ func (a *Agent) handleTerminate(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+type RunningJob struct {
+	JobID string `json:"job_id"`
+	PID   int    `json:"pid"`
+}
+
+func (a *Agent) handleRunning(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	running := make([]RunningJob, 0, len(a.activeJobs))
+	for id, runner := range a.activeJobs {
+		running = append(running, RunningJob{
+			JobID: id,
+			PID:   runner.PID(),
+		})
+	}
+	a.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(running)
 }
 
 func (a *Agent) updateJobStatus(jobID string, state models.JobState, exitCode *int) {
@@ -131,6 +163,7 @@ func (a *Agent) updateJobStatus(jobID string, state models.JobState, exitCode *i
 	body, _ := json.Marshal(reqObj)
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", a.sharedToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -180,7 +213,11 @@ func (a *Agent) handleLogs(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// If job is no longer active, we should eventually stop
-			if _, active := a.activeJobs[jobID]; !active {
+			a.mu.Lock()
+			_, active := a.activeJobs[jobID]
+			a.mu.Unlock()
+
+			if !active {
 				// Final copy
 				_, _ = io.Copy(w, f)
 				return
@@ -225,7 +262,11 @@ func (a *Agent) sendHeartbeat() {
 	body, _ := json.Marshal(req)
 	url := fmt.Sprintf("%s/v1/agent/heartbeat", a.controllerURL)
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+	reqHeader, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	reqHeader.Header.Set("Content-Type", "application/json")
+	reqHeader.Header.Set("X-Agent-Token", a.sharedToken)
+
+	resp, err := http.DefaultClient.Do(reqHeader)
 	if err != nil {
 		fmt.Printf("Error sending heartbeat: %v\n", err)
 		return

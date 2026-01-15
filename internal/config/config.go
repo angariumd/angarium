@@ -11,6 +11,8 @@ type ControllerConfig struct {
 	DBPath      string `yaml:"db_path"`
 	SharedToken string `yaml:"shared_token"` // For agent -> controller
 	Users       []User `yaml:"users"`
+	CertPath    string `yaml:"cert_path"`
+	KeyPath     string `yaml:"key_path"`
 }
 
 type User struct {
@@ -24,6 +26,8 @@ type AgentConfig struct {
 	SharedToken   string `yaml:"shared_token"`
 	NodeID        string `yaml:"node_id"`
 	Addr          string `yaml:"addr"`
+	CertPath      string `yaml:"cert_path"`
+	KeyPath       string `yaml:"key_path"`
 }
 
 func LoadControllerConfig(path string) (*ControllerConfig, error) {
