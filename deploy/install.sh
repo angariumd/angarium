@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Stop existing services
+sudo systemctl stop angarium-controller angarium-agent || true
+
 # Angarium Installer
 # Usage: sudo ./install.sh [controller|agent]
 
@@ -28,8 +31,9 @@ sudo cp bin/angarium-agent /usr/local/bin/angarium-agent
 # 3. Create directories
 sudo mkdir -p /etc/angarium
 sudo mkdir -p /var/lib/angarium
+sudo mkdir -p /var/log/angarium
 sudo useradd -r -s /bin/false angarium 2>/dev/null || true
-sudo chown -R angarium:angarium /var/lib/angarium 2>/dev/null || true
+sudo chown -R angarium:angarium /var/lib/angarium /var/log/angarium 2>/dev/null || true
 
 # 4. Copy config if doesn't exist
 if [[ ! -f "/etc/angarium/$MODE.yaml" ]]; then
