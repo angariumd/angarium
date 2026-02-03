@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -13,24 +14,16 @@ type DB struct {
 
 func Open(path string) (*DB, error) {
 	// Use _txlock=immediate to avoid deadlocks during concurrent writes
-	dsn := fmt.Sprintf("%s?_txlock=immediate", path)
+	// Set pragmas via DSN to ensure they apply to all connections
+	dsn := fmt.Sprintf("%s?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	// Optimization pragmas for SQLite
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL;",
-		"PRAGMA synchronous=NORMAL;",
-		"PRAGMA busy_timeout=10000;",
-		"PRAGMA foreign_keys=ON;",
-	}
-	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
-			return nil, fmt.Errorf("setting pragma %q: %w", p, err)
-		}
-	}
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	return &DB{conn: db}, nil
 }
