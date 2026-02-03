@@ -116,7 +116,7 @@ func (s *Scheduler) tryScheduleJob(job models.Job) error {
 		return s.updateJobReason(job.ID, "No nodes are currently UP")
 	}
 
-	// 1. Check if the job is physically satisfyable by the cluster (hardware check)
+	// Check if the job is physically satisfyable by the cluster (hardware check)
 	if stats.totalHealthyGPUs < job.GPUCount {
 		return s.updateJobReason(job.ID, fmt.Sprintf("Cluster only has %d healthy GPUs total, but job requires %d", stats.totalHealthyGPUs, job.GPUCount))
 	}
@@ -124,7 +124,7 @@ func (s *Scheduler) tryScheduleJob(job models.Job) error {
 		return s.updateJobReason(job.ID, fmt.Sprintf("No single node has %d GPUs (max capacity is %d)", job.GPUCount, stats.maxHealthySingleNode))
 	}
 
-	// 2. Hardware exists, check if it's currently available (occupancy check)
+	// Hardware exists, check if it's currently available (occupancy check)
 	var bestNode *nodeCapacity
 	for i := range stats.nodes {
 		if len(stats.nodes[i].available) >= job.GPUCount {
@@ -149,7 +149,7 @@ func (s *Scheduler) tryScheduleJob(job models.Job) error {
 }
 
 func (s *Scheduler) getClusterStats() (*clusterStats, error) {
-	// 1. Get all UP nodes
+	// Get all UP nodes
 	rows, err := s.db.Query("SELECT id FROM nodes WHERE status = 'UP'")
 	if err != nil {
 		return nil, err
