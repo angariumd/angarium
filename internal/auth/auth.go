@@ -68,3 +68,7 @@ func UserFromContext(ctx context.Context) *models.User {
 	}
 	return user
 }
+
+func ContextWithUser(ctx context.Context, user *models.User) context.Context {
+	return context.WithValue(ctx, userKey, user)
+}

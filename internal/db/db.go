@@ -23,7 +23,7 @@ func Open(path string) (*DB, error) {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL;",
 		"PRAGMA synchronous=NORMAL;",
-		"PRAGMA busy_timeout=5000;",
+		"PRAGMA busy_timeout=10000;",
 		"PRAGMA foreign_keys=ON;",
 	}
 	for _, p := range pragmas {
@@ -76,6 +76,8 @@ func (d *DB) Init() error {
 		command TEXT NOT NULL,
 		cwd TEXT NOT NULL,
 		env_json TEXT NOT NULL,
+		retry_count INTEGER NOT NULL DEFAULT 0,
+		max_runtime_minutes INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME NOT NULL,
 		queued_at DATETIME NOT NULL,
 		started_at DATETIME,
@@ -93,6 +95,10 @@ func (d *DB) Init() error {
 		node_id TEXT,
 		payload_json TEXT
 	);
+
+	CREATE INDEX IF NOT EXISTS idx_events_job_id ON events(job_id);
+	CREATE INDEX IF NOT EXISTS idx_events_node_id ON events(node_id);
+	CREATE INDEX IF NOT EXISTS idx_events_at ON events(at);
 
 	CREATE TABLE IF NOT EXISTS allocations (
 		id TEXT PRIMARY KEY,

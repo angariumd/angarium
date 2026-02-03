@@ -11,6 +11,7 @@ import (
 
 	"github.com/angariumd/angarium/internal/auth"
 	"github.com/angariumd/angarium/internal/db"
+	"github.com/angariumd/angarium/internal/events"
 	"github.com/angariumd/angarium/internal/models"
 )
 
@@ -26,7 +27,10 @@ func TestJobLifecycle(t *testing.T) {
 	defer database.Close()
 	database.Init()
 
-	server := NewServer(database, auth.NewAuthenticator(database), "test-token")
+	eventMgr := events.New(database)
+	defer eventMgr.Close()
+
+	server := NewServer(database, auth.NewAuthenticator(database), eventMgr, "test-token")
 
 	// 0. Seed dependent records
 	database.Exec("INSERT INTO users (id, name, token_hash) VALUES ('user-1', 'User 1', 'token-1')")
@@ -155,7 +159,10 @@ func TestJobCancel(t *testing.T) {
 	defer database.Close()
 	database.Init()
 
-	server := NewServer(database, auth.NewAuthenticator(database), "test-token")
+	eventMgr := events.New(database)
+	defer eventMgr.Close()
+
+	server := NewServer(database, auth.NewAuthenticator(database), eventMgr, "test-token")
 
 	// Seed User
 	database.Exec("INSERT INTO users (id, name, token_hash) VALUES ('user-1', 'User 1', 'token-1')")
@@ -171,7 +178,8 @@ func TestJobCancel(t *testing.T) {
 	req.SetPathValue("id", jobID)
 	rr := httptest.NewRecorder()
 
-	server.handleJobCancel(rr, req)
+	ctx := auth.ContextWithUser(req.Context(), &models.User{ID: "user-1", Name: "User 1"})
+	server.handleJobCancel(rr, req.WithContext(ctx))
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", rr.Code)
@@ -207,7 +215,8 @@ func TestJobCancel(t *testing.T) {
 	req.SetPathValue("id", jobID2)
 	rr = httptest.NewRecorder()
 
-	server.handleJobCancel(rr, req)
+	ctx = auth.ContextWithUser(req.Context(), &models.User{ID: "user-1", Name: "User 1"})
+	server.handleJobCancel(rr, req.WithContext(ctx))
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", rr.Code)

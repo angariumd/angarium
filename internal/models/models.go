@@ -47,20 +47,22 @@ const (
 )
 
 type Job struct {
-	ID         string     `json:"id"`
-	OwnerID    string     `json:"owner_id"`
-	State      JobState   `json:"state"`
-	Priority   int        `json:"priority"`
-	GPUCount   int        `json:"gpu_count"`
-	Command    string     `json:"command"`
-	CWD        string     `json:"cwd"`
-	EnvJSON    string     `json:"env_json"`
-	CreatedAt  time.Time  `json:"created_at"`
-	QueuedAt   time.Time  `json:"queued_at"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
-	ExitCode   *int       `json:"exit_code,omitempty"`
-	Reason     *string    `json:"reason,omitempty"`
+	ID                string     `json:"id"`
+	OwnerID           string     `json:"owner_id"`
+	State             JobState   `json:"state"`
+	Priority          int        `json:"priority"`
+	GPUCount          int        `json:"gpu_count"`
+	Command           string     `json:"command"`
+	CWD               string     `json:"cwd"`
+	EnvJSON           string     `json:"env_json"`
+	RetryCount        int        `json:"retry_count"`
+	MaxRuntimeMinutes int        `json:"max_runtime_minutes"`
+	CreatedAt         time.Time  `json:"created_at"`
+	QueuedAt          time.Time  `json:"queued_at"`
+	StartedAt         *time.Time `json:"started_at,omitempty"`
+	FinishedAt        *time.Time `json:"finished_at,omitempty"`
+	ExitCode          *int       `json:"exit_code,omitempty"`
+	Reason            *string    `json:"reason,omitempty"`
 }
 
 type Event struct {

@@ -17,6 +17,7 @@ type JobRunner struct {
 	gpuUUIDs     []string
 	logDir       string
 	cmd          *exec.Cmd
+	monitoredPID int
 	err          error
 	finishedChan chan struct{}
 }
@@ -28,6 +29,30 @@ func NewJobRunner(job models.Job, gpuUUIDs []string, logDir string) *JobRunner {
 		logDir:       logDir,
 		finishedChan: make(chan struct{}),
 	}
+}
+
+func NewRecoveredJobRunner(job models.Job, pid int) *JobRunner {
+	r := &JobRunner{
+		job:          job,
+		monitoredPID: pid,
+		finishedChan: make(chan struct{}),
+	}
+
+	go func() {
+		// Poll for process existence
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			if err := syscall.Kill(pid, 0); err != nil {
+				// Process is gone
+				close(r.finishedChan)
+				return
+			}
+		}
+	}()
+
+	return r
 }
 
 func (r *JobRunner) Start() error {
@@ -97,6 +122,19 @@ func (r *JobRunner) Wait() error {
 }
 
 func (r *JobRunner) Stop() error {
+	if r.monitoredPID > 0 {
+		// Recovered job
+		syscall.Kill(r.monitoredPID, syscall.SIGTERM)
+		// Wait grace period
+		select {
+		case <-r.finishedChan:
+			return nil
+		case <-time.After(5 * time.Second):
+			syscall.Kill(r.monitoredPID, syscall.SIGKILL)
+			return nil
+		}
+	}
+
 	if r.cmd == nil || r.cmd.Process == nil {
 		return nil
 	}
@@ -133,6 +171,9 @@ func (r *JobRunner) Stop() error {
 }
 
 func (r *JobRunner) PID() int {
+	if r.monitoredPID > 0 {
+		return r.monitoredPID
+	}
 	if r.cmd != nil && r.cmd.Process != nil {
 		return r.cmd.Process.Pid
 	}

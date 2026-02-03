@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/angariumd/angarium/internal/models"
@@ -28,7 +29,7 @@ type Agent struct {
 }
 
 func NewAgent(nodeID, controllerURL string, gpuProvider GPUProvider, version, addr, sharedToken string) *Agent {
-	return &Agent{
+	a := &Agent{
 		nodeID:        nodeID,
 		controllerURL: controllerURL,
 		gpuProvider:   gpuProvider,
@@ -38,6 +39,14 @@ func NewAgent(nodeID, controllerURL string, gpuProvider GPUProvider, version, ad
 		sharedToken:   sharedToken,
 		activeJobs:    make(map[string]*JobRunner),
 	}
+
+	// Create log dir if not exists
+	os.MkdirAll(a.logDir, 0755)
+
+	// Load recovered jobs
+	a.loadState()
+
+	return a
 }
 
 func (a *Agent) Routes() http.Handler {
@@ -69,13 +78,14 @@ func (a *Agent) handleLaunch(w http.ResponseWriter, r *http.Request) {
 
 	a.mu.Lock()
 	a.activeJobs[req.Job.ID] = runner
+	a.saveStateLocked()
 	a.mu.Unlock()
-
-	// Report STARTING state to controller
-	go a.updateJobStatus(req.Job.ID, models.JobStateStarting, nil)
 
 	// Wait for process to start properly (could be immediate)
 	go func() {
+		// Report STARTING first to acknowledge
+		a.updateJobStatus(req.Job.ID, models.JobStateStarting, nil)
+
 		// Report RUNNING state
 		a.updateJobStatus(req.Job.ID, models.JobStateRunning, nil)
 
@@ -97,6 +107,7 @@ func (a *Agent) handleLaunch(w http.ResponseWriter, r *http.Request) {
 
 		a.mu.Lock()
 		delete(a.activeJobs, req.Job.ID)
+		a.saveStateLocked()
 		a.mu.Unlock()
 		a.updateJobStatus(req.Job.ID, state, exitCode)
 	}()
@@ -243,6 +254,7 @@ type HeartbeatRequest struct {
 	AgentVersion string       `json:"agent_version"`
 	Addr         string       `json:"addr"`
 	GPUs         []models.GPU `json:"gpus"`
+	ActiveJobIDs []string     `json:"active_job_ids"`
 }
 
 func (a *Agent) sendHeartbeat() {
@@ -252,11 +264,19 @@ func (a *Agent) sendHeartbeat() {
 		return
 	}
 
+	a.mu.Lock()
+	activeIDs := make([]string, 0, len(a.activeJobs))
+	for id := range a.activeJobs {
+		activeIDs = append(activeIDs, id)
+	}
+	a.mu.Unlock()
+
 	req := HeartbeatRequest{
 		NodeID:       a.nodeID,
 		AgentVersion: a.version,
 		Addr:         a.addr,
 		GPUs:         gpus,
+		ActiveJobIDs: activeIDs,
 	}
 
 	body, _ := json.Marshal(req)
@@ -275,5 +295,69 @@ func (a *Agent) sendHeartbeat() {
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Printf("Heartbeat failed with status: %d\n", resp.StatusCode)
+	}
+}
+
+// Persistence logic
+
+type PersistentState struct {
+	ActiveJobs []struct {
+		JobID string `json:"job_id"`
+		PID   int    `json:"pid"`
+	} `json:"active_jobs"`
+}
+
+func (a *Agent) statePath() string {
+	return filepath.Join(a.logDir, "agent_state.json")
+}
+
+func (a *Agent) saveState() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.saveStateLocked()
+}
+
+func (a *Agent) saveStateLocked() {
+	state := PersistentState{}
+	for id, runner := range a.activeJobs {
+		pid := runner.PID()
+		if pid > 0 {
+			state.ActiveJobs = append(state.ActiveJobs, struct {
+				JobID string `json:"job_id"`
+				PID   int    `json:"pid"`
+			}{JobID: id, PID: pid})
+		}
+	}
+
+	data, _ := json.MarshalIndent(state, "", "  ")
+	_ = os.WriteFile(a.statePath(), data, 0644)
+}
+
+func (a *Agent) loadState() {
+	data, err := os.ReadFile(a.statePath())
+	if err != nil {
+		return // No state to load or error reading
+	}
+
+	var state PersistentState
+	if err := json.Unmarshal(data, &state); err != nil {
+		fmt.Printf("Error unmarshaling state: %v\n", err)
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for _, j := range state.ActiveJobs {
+		// Check if process is alive
+		// os.FindProcess always succeeds on Unix, verify with signal 0
+		proc, err := os.FindProcess(j.PID)
+		if err == nil {
+			if err := proc.Signal(syscall.Signal(0)); err == nil {
+				// Process is alive, re-adopt it
+				fmt.Printf("Recovering job %s (PID %d)\n", j.JobID, j.PID)
+				a.activeJobs[j.JobID] = NewRecoveredJobRunner(models.Job{ID: j.JobID}, j.PID)
+			}
+		}
 	}
 }

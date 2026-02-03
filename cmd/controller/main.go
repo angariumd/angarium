@@ -13,6 +13,7 @@ import (
 	"github.com/angariumd/angarium/internal/config"
 	"github.com/angariumd/angarium/internal/controller"
 	"github.com/angariumd/angarium/internal/db"
+	"github.com/angariumd/angarium/internal/events"
 	"github.com/angariumd/angarium/internal/scheduler"
 )
 
@@ -47,10 +48,13 @@ func main() {
 	}
 
 	authenticator := auth.NewAuthenticator(database)
-	server := controller.NewServer(database, authenticator, cfg.SharedToken)
+	eventMgr := events.New(database)
+	defer eventMgr.Close()
+
+	server := controller.NewServer(database, authenticator, eventMgr, cfg.SharedToken)
 
 	// Start scheduler
-	sched := scheduler.New(database, cfg.SharedToken)
+	sched := scheduler.New(database, eventMgr, cfg.SharedToken)
 	go sched.Run(context.Background(), 2*time.Second)
 
 	// Start stale node detector

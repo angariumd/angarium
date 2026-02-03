@@ -10,20 +10,29 @@ import (
 	"time"
 
 	"github.com/angariumd/angarium/internal/db"
+	"github.com/angariumd/angarium/internal/events"
 	"github.com/angariumd/angarium/internal/models"
 	"github.com/google/uuid"
 )
+
+const SQLTimeLayout = "2006-01-02 15:04:05"
+
+func formatTime(t time.Time) string {
+	return t.UTC().Format(SQLTimeLayout)
+}
 
 const DefaultLeaseDuration = 1 * time.Minute
 
 type Scheduler struct {
 	db         *db.DB
+	events     *events.EventManager
 	AgentToken string
 }
 
-func New(db *db.DB, agentToken string) *Scheduler {
+func New(db *db.DB, events *events.EventManager, agentToken string) *Scheduler {
 	return &Scheduler{
 		db:         db,
+		events:     events,
 		AgentToken: agentToken,
 	}
 }
@@ -43,6 +52,7 @@ func (s *Scheduler) Run(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 			s.Schedule(ctx)
 			s.CleanupLeases(ctx)
+			s.EnforceMaxRuntime(ctx)
 		}
 	}
 }
@@ -160,13 +170,14 @@ func (s *Scheduler) getClusterStats() (*clusterStats, error) {
 		return stats, nil
 	}
 
+	now := time.Now().UTC()
 	for _, nodeID := range nodeIDs {
 		gpuRows, err := s.db.Query(`
 			SELECT g.id, g.node_id, g.idx, g.uuid, g.name, g.memory_mb, g.health, g.last_seen_at,
-			       (SELECT COUNT(*) FROM gpu_leases l WHERE l.gpu_id = g.id AND l.expires_at > datetime('now')) as is_leased
+			       (SELECT COUNT(*) FROM gpu_leases l WHERE l.gpu_id = g.id AND l.expires_at > ?) as is_leased
 			FROM gpus g
 			WHERE g.node_id = ? AND g.health = 'OK'
-		`, nodeID)
+		`, formatTime(now), nodeID)
 		if err != nil {
 			return nil, err
 		}
@@ -207,30 +218,32 @@ func (s *Scheduler) allocateJob(job models.Job, nodeID string, gpus []models.GPU
 	defer tx.Rollback()
 
 	allocationID := uuid.New().String()
-	now := time.Now()
+	now := time.Now().UTC()
 	expiresAt := now.Add(DefaultLeaseDuration) // Initial lease for starting
+	nowStr := formatTime(now)
+	expiresAtStr := formatTime(expiresAt)
 
-	// 1. Update Job state
+	// Update Job state
 	_, err = tx.Exec("UPDATE jobs SET state = ?, reason = NULL WHERE id = ?", models.JobStateAllocated, job.ID)
 	if err != nil {
 		return err
 	}
 
-	// 2. Create Allocation
+	// Create Allocation
 	_, err = tx.Exec(`
 		INSERT INTO allocations (id, job_id, node_id, status, created_at)
 		VALUES (?, ?, ?, ?, ?)
-	`, allocationID, job.ID, nodeID, "ALLOCATED", now)
+	`, allocationID, job.ID, nodeID, "ALLOCATED", nowStr)
 	if err != nil {
 		return err
 	}
 
-	// 3. Create GPU Leases
+	// Create GPU Leases
 	for _, gpu := range gpus {
 		_, err = tx.Exec(`
 			INSERT INTO gpu_leases (gpu_id, allocation_id, leased_at, expires_at)
 			VALUES (?, ?, ?, ?)
-		`, gpu.ID, allocationID, now, expiresAt)
+		`, gpu.ID, allocationID, nowStr, expiresAtStr)
 		if err != nil {
 			return err
 		}
@@ -240,8 +253,12 @@ func (s *Scheduler) allocateJob(job models.Job, nodeID string, gpus []models.GPU
 		return err
 	}
 
-	// 4. Notify Agent
+	// Notify Agent
 	go s.notifyAgentLaunch(job, nodeID, gpus)
+
+	s.events.Emit(events.TypeJobAllocated, &job.ID, &nodeID, map[string]any{
+		"gpu_count": len(gpus),
+	})
 
 	return nil
 }
@@ -298,10 +315,113 @@ func (s *Scheduler) updateJobReason(jobID string, reason string) error {
 }
 
 func (s *Scheduler) CleanupLeases(ctx context.Context) {
-	// Clean up leases that have expired
-	// In the future, we should only clean up if the job hasn't moved beyond ALLOCATED/STARTING
-	_, err := s.db.Exec("DELETE FROM gpu_leases WHERE expires_at < datetime('now')")
+	nowStr := formatTime(time.Now())
+	// Identify jobs that are stuck in ALLOCATED/STARTING with expired leases
+	rows, err := s.db.Query(`
+		SELECT j.id, j.retry_count 
+		FROM jobs j
+		JOIN allocations a ON a.job_id = j.id
+		JOIN gpu_leases l ON l.allocation_id = a.id
+		WHERE l.expires_at < ?
+		AND j.state IN (?, ?)
+		GROUP BY j.id
+	`, nowStr, models.JobStateAllocated, models.JobStateStarting)
+	if err != nil {
+		log.Printf("Scheduler: error querying stuck jobs: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var jobsToReap []struct {
+		ID         string
+		RetryCount int
+	}
+
+	for rows.Next() {
+		var j struct {
+			ID         string
+			RetryCount int
+		}
+		if err := rows.Scan(&j.ID, &j.RetryCount); err == nil {
+			jobsToReap = append(jobsToReap, j)
+		}
+	}
+	rows.Close()
+
+	// Process stuck jobs
+	for _, j := range jobsToReap {
+		if j.RetryCount < 3 {
+			log.Printf("Scheduler: job %s stalled during allocation. Retrying (%d/3)...", j.ID, j.RetryCount+1)
+			s.db.Exec(`
+				UPDATE jobs 
+				SET state = ?, retry_count = retry_count + 1, reason = 'Allocation timeout, retrying', queued_at = ?, started_at = NULL
+				WHERE id = ?
+			`, models.JobStateQueued, nowStr, j.ID)
+			s.events.Emit(events.TypeLeaseExpired, &j.ID, nil, map[string]int{"retry_count": j.RetryCount + 1})
+		} else {
+			log.Printf("Scheduler: job %s stalled too many times. Marking FAILED.", j.ID)
+			s.db.Exec(`
+				UPDATE jobs 
+				SET state = ?, finished_at = ?, reason = 'Allocation timeout: max retries exceeded'
+				WHERE id = ?
+			`, models.JobStateFailed, nowStr, j.ID)
+			s.events.Emit(events.TypeJobLost, &j.ID, nil, map[string]string{"reason": "max_retries_exceeded"})
+		}
+
+		// Mark allocation as released (orphaned)
+		s.db.Exec(`
+			UPDATE allocations 
+			SET status = 'RELEASED', released_at = ? 
+			WHERE job_id = ? AND released_at IS NULL
+		`, nowStr, j.ID)
+	}
+
+	// Clean up leases that have expired (this cleans up the physical reservation)
+	_, err = s.db.Exec("DELETE FROM gpu_leases WHERE expires_at < ?", nowStr)
 	if err != nil {
 		log.Printf("Scheduler: error cleaning up leases: %v", err)
+	}
+}
+
+func (s *Scheduler) EnforceMaxRuntime(ctx context.Context) {
+	// Look for jobs in STARTING or RUNNING state that exceeded runtime
+	// We use datetime() in SQL now that we have standardized formats
+	nowStr := formatTime(time.Now())
+	rows, err := s.db.Query(`
+		SELECT id FROM jobs 
+		WHERE state IN (?, ?) 
+		AND max_runtime_minutes > 0 
+		AND started_at IS NOT NULL
+		AND datetime(started_at, '+' || max_runtime_minutes || ' minutes') < datetime(?)
+	`, models.JobStateRunning, models.JobStateStarting, nowStr)
+	if err != nil {
+		log.Printf("Scheduler: error checking max runtime: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var expiredIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			expiredIDs = append(expiredIDs, id)
+		}
+	}
+	rows.Close()
+
+	for _, id := range expiredIDs {
+		log.Printf("Scheduler: job %s exceeded max runtime. Canceling.", id)
+		s.db.Exec(`
+			UPDATE jobs 
+			SET state = ?, finished_at = ?, reason = 'Max runtime exceeded' 
+			WHERE id = ?
+		`, models.JobStateCanceled, nowStr, id)
+		s.events.Emit(events.TypeMaxRuntimeExcd, &id, nil, nil)
+
+		s.db.Exec(`
+			UPDATE allocations 
+			SET status = 'CANCELED', released_at = ? 
+			WHERE job_id = ? AND released_at IS NULL
+		`, nowStr, id)
 	}
 }

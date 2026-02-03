@@ -3,10 +3,10 @@ package controller
 import (
 	"os"
 	"testing"
-	"time"
 
 	"github.com/angariumd/angarium/internal/auth"
 	"github.com/angariumd/angarium/internal/db"
+	"github.com/angariumd/angarium/internal/events"
 )
 
 func TestNodeStaleness(t *testing.T) {
@@ -23,14 +23,16 @@ func TestNodeStaleness(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := NewServer(database, auth.NewAuthenticator(database), "test-token")
+	eventMgr := events.New(database)
+	defer eventMgr.Close()
+
+	server := NewServer(database, auth.NewAuthenticator(database), eventMgr, "test-token")
 
 	// Insert a node that is currently UP but staleness is imminent
-	staleTime := time.Now().Add(-30 * time.Second)
 	_, err = database.Exec(`
 		INSERT INTO nodes (id, status, last_heartbeat_at, agent_version)
-		VALUES (?, 'UP', ?, ?)
-	`, "stale-node", staleTime, "v0.1.0")
+		VALUES (?, 'UP', datetime('now', '-30 seconds'), ?)
+	`, "stale-node", "v0.1.0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,8 +40,8 @@ func TestNodeStaleness(t *testing.T) {
 	// Insert a fresh node
 	_, err = database.Exec(`
 		INSERT INTO nodes (id, status, last_heartbeat_at, agent_version)
-		VALUES (?, 'UP', ?, ?)
-	`, "fresh-node", time.Now(), "v0.1.0")
+		VALUES (?, 'UP', datetime('now'), ?)
+	`, "fresh-node", "v0.1.0")
 	if err != nil {
 		t.Fatal(err)
 	}

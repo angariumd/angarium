@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/angariumd/angarium/internal/db"
+	"github.com/angariumd/angarium/internal/events"
 	"github.com/angariumd/angarium/internal/models"
 )
 
@@ -37,7 +38,10 @@ func TestLeaseRecovery(t *testing.T) {
 		VALUES ('GPU-node-A-0', 'old-alloc', datetime('now', '-2 minutes'), datetime('now', '-1 minute'))
 	`)
 
-	s := New(database, "test-token")
+	eventMgr := events.New(database)
+	defer eventMgr.Close()
+
+	s := New(database, eventMgr, "test-token")
 
 	// On startup, Run() calls CleanupLeases.
 	// The GPU should become available.
@@ -78,7 +82,10 @@ func TestBestFit(t *testing.T) {
 	seedNode(t, database, "node-A", 2)
 	seedNode(t, database, "node-B", 4)
 
-	s := New(database, "test-token")
+	eventMgr := events.New(database)
+	defer eventMgr.Close()
+
+	s := New(database, eventMgr, "test-token")
 
 	// 1. Submit a 2-GPU job. Should go to Node A (Best-fit).
 	job1ID := seedJob(t, database, "user-1", 2)
