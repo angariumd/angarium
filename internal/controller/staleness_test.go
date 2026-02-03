@@ -1,8 +1,13 @@
 package controller
 
 import (
+	"fmt"
+	"io"
+	"log"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/angariumd/angarium/internal/auth"
 	"github.com/angariumd/angarium/internal/db"
@@ -10,7 +15,9 @@ import (
 )
 
 func TestNodeStaleness(t *testing.T) {
-	dbPath := "test_staleness.db"
+	dbPath := filepath.Join(os.TempDir(), fmt.Sprintf("test_staleness_%d.db", time.Now().UnixNano()))
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
 	defer os.Remove(dbPath)
 
 	database, err := db.Open(dbPath)

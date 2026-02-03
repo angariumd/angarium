@@ -3,7 +3,10 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,9 +16,11 @@ import (
 )
 
 func TestLeaseRecovery(t *testing.T) {
-	dbPath := "test_recovery.db"
-	os.Remove(dbPath)
+	dbPath := filepath.Join(os.TempDir(), fmt.Sprintf("test_recovery_%d.db", time.Now().UnixNano()))
 	defer os.Remove(dbPath)
+	// Silence logs for expected errors
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
 
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -62,9 +67,11 @@ func TestLeaseRecovery(t *testing.T) {
 }
 
 func TestBestFit(t *testing.T) {
-	dbPath := "test_scheduler.db"
-	os.Remove(dbPath)
+	dbPath := filepath.Join(os.TempDir(), fmt.Sprintf("test_scheduler_%d.db", time.Now().UnixNano()))
 	defer os.Remove(dbPath)
+	// Silence logs
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
 
 	database, err := db.Open(dbPath)
 	if err != nil {

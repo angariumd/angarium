@@ -3,9 +3,12 @@ package controller
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,9 +19,10 @@ import (
 )
 
 func TestJobLifecycle(t *testing.T) {
-	dbPath := "test_lifecycle.db"
-	os.Remove(dbPath)
-	defer os.Remove(dbPath)
+	dbPath := filepath.Join(t.TempDir(), "test_lifecycle.db")
+	// Silence expected logs
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
 
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -148,9 +152,10 @@ func TestJobLifecycle(t *testing.T) {
 }
 
 func TestJobCancel(t *testing.T) {
-	dbPath := "test_cancel.db"
-	os.Remove(dbPath)
-	defer os.Remove(dbPath)
+	dbPath := filepath.Join(t.TempDir(), "test_cancel.db")
+	// Silence expected logs
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
 
 	database, err := db.Open(dbPath)
 	if err != nil {
