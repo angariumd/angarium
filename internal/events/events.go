@@ -38,9 +38,9 @@ type EventManager struct {
 func New(database *db.DB) *EventManager {
 	em := &EventManager{
 		db:        database,
-		in:        make(chan models.Event, 1000), // Buffer 1000 events
+		in:        make(chan models.Event, 1000), // Buffer peaks before dropping
 		done:      make(chan struct{}),
-		batchSize: 100,
+		batchSize: 100, // Balance latency vs SQL throughput
 	}
 
 	em.wg.Add(1)
@@ -72,7 +72,7 @@ func (em *EventManager) Emit(eventType string, jobID, nodeID *string, payload an
 		PayloadJSON: payloadJSON,
 	}:
 	default:
-		// Drop event if buffer is full to prevent blocking
+		// Load shed: better to lose telemetry than stall the scheduler
 		log.Printf("EventManager: Dropped event %s (buffer full)", eventType)
 	}
 }

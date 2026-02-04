@@ -67,12 +67,10 @@ func main() {
 	tps := float64(totalJobs) / duration.Seconds()
 	avgLatency := time.Duration(atomic.LoadInt64(&totalLatency) / int64(totalJobs))
 
-	fmt.Println("\n--- Results ---")
-	fmt.Printf("Total Time: %v\n", duration)
-	fmt.Printf("TPS: %.2f req/sec\n", tps)
-	fmt.Printf("Success: %d\n", atomic.LoadInt64(&successCount))
-	fmt.Printf("Failed:  %d\n", atomic.LoadInt64(&failCount))
-	fmt.Printf("Avg Latency: %v\n", avgLatency)
+	fmt.Printf("\n--- Results (%d total) ---\n", totalJobs)
+	fmt.Printf("Duration: %v (%.2f ops/sec)\n", duration, tps)
+	fmt.Printf("Latency:  avg=%v\n", avgLatency)
+	fmt.Printf("Status:   %d ok, %d failed\n", atomic.LoadInt64(&successCount), atomic.LoadInt64(&failCount))
 }
 
 func worker(id int) {
@@ -109,10 +107,12 @@ func worker(id int) {
 			continue
 		}
 
-		// Read body to reuse connection
+		// consume body to reuse keep-alive
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 
 		atomic.AddInt64(&successCount, 1)
 	}
 }
+
+// TODO(sam): add support for multiple GPU counts in the mix-in

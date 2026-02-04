@@ -25,10 +25,9 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	// For MVP: treat all internal HTTPS as insecure if we are using self-signed
+	// Accept self-signed certs for internal communication
 	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 
-	// Initialize GPU inventory and agent
 	nodeID, _ := os.Hostname()
 	if cfg.NodeID != "" {
 		nodeID = cfg.NodeID
@@ -44,7 +43,7 @@ func main() {
 			log.Fatal("FATAL: nvidia-smi not found. Compute nodes require NVIDIA drivers. Use --mock for testing.")
 		}
 
-		// Verify it actually works
+		// Verify GPU communication
 		if err := exec.Command("nvidia-smi", "-L").Run(); err != nil {
 			log.Fatal("FATAL: nvidia-smi found but failed to communicate with GPUs. Check drivers.")
 		}
@@ -58,7 +57,6 @@ func main() {
 	fmt.Printf("Angarium Agent starting (Node ID: %s, Addr: %s)...\n", nodeID, cfg.Addr)
 	a.StartHeartbeat(5 * time.Second)
 
-	// Initialize API server
 	go func() {
 		listenAddr := cfg.Addr
 		if strings.HasPrefix(listenAddr, "http://") {

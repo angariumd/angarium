@@ -13,8 +13,7 @@ type DB struct {
 }
 
 func Open(path string) (*DB, error) {
-	// Use _txlock=immediate to avoid deadlocks during concurrent writes
-	// Set pragmas via DSN to ensure they apply to all connections
+	// _txlock=immediate avoids deadlocks during concurrent writes
 	dsn := fmt.Sprintf("%s?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

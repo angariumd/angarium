@@ -40,10 +40,7 @@ func NewAgent(nodeID, controllerURL string, gpuProvider GPUProvider, version, ad
 		activeJobs:    make(map[string]*JobRunner),
 	}
 
-	// Create log dir if not exists
-	os.MkdirAll(a.logDir, 0755)
-
-	// Load recovered jobs
+	// Restore state if useful (e.g. after a crash/restart)
 	a.loadState()
 
 	return a
@@ -81,12 +78,10 @@ func (a *Agent) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	a.saveStateLocked()
 	a.mu.Unlock()
 
-	// Wait for process to start properly (could be immediate)
+	// Async launch: verify start -> wait -> cleanup
 	go func() {
-		// Report STARTING first to acknowledge
 		a.updateJobStatus(req.Job.ID, models.JobStateStarting, nil)
 
-		// Report RUNNING state
 		a.updateJobStatus(req.Job.ID, models.JobStateRunning, nil)
 
 		err := runner.Wait()
@@ -178,7 +173,7 @@ func (a *Agent) updateJobStatus(jobID string, state models.JobState, exitCode *i
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		fmt.Printf("Error updating job status: %v\n", err)
+		fmt.Printf("status update failed: %v\n", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -198,7 +193,6 @@ func (a *Agent) handleLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Transfer-Encoding", "chunked")
 
-	// Read everything current
 	_, _ = io.Copy(w, f)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
@@ -208,7 +202,7 @@ func (a *Agent) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stream new data as it arrives
+	// Stream updates
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -217,19 +211,17 @@ func (a *Agent) handleLogs(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			// Just copy any new data
 			_, _ = io.Copy(w, f)
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
 
-			// If job is no longer active, we should eventually stop
+			// Stop streaming when job completes
 			a.mu.Lock()
 			_, active := a.activeJobs[jobID]
 			a.mu.Unlock()
 
 			if !active {
-				// Final copy
 				_, _ = io.Copy(w, f)
 				return
 			}
@@ -239,8 +231,7 @@ func (a *Agent) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 func (a *Agent) StartHeartbeat(interval time.Duration) {
 	ticker := time.NewTicker(interval)
-	// Initial heartbeat
-	a.sendHeartbeat()
+	a.sendHeartbeat() // immediate first beat
 
 	go func() {
 		for range ticker.C {
@@ -260,7 +251,7 @@ type HeartbeatRequest struct {
 func (a *Agent) sendHeartbeat() {
 	gpus, err := a.gpuProvider.GetGPUs()
 	if err != nil {
-		fmt.Printf("Error getting GPUs: %v\n", err)
+		fmt.Printf("failed to query GPUs: %v\n", err)
 		return
 	}
 
@@ -297,8 +288,6 @@ func (a *Agent) sendHeartbeat() {
 		fmt.Printf("Heartbeat failed with status: %d\n", resp.StatusCode)
 	}
 }
-
-// Persistence logic
 
 type PersistentState struct {
 	ActiveJobs []struct {
@@ -354,7 +343,7 @@ func (a *Agent) loadState() {
 		proc, err := os.FindProcess(j.PID)
 		if err == nil {
 			if err := proc.Signal(syscall.Signal(0)); err == nil {
-				// Process is alive, re-adopt it
+				// Process alive, recover it
 				fmt.Printf("Recovering job %s (PID %d)\n", j.JobID, j.PID)
 				a.activeJobs[j.JobID] = NewRecoveredJobRunner(models.Job{ID: j.JobID}, j.PID)
 			}

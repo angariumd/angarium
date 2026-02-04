@@ -69,10 +69,10 @@ func (s *Server) detectStaleNodes() {
 	now := time.Now().UTC()
 	deadline := now.Add(-20 * time.Second)
 
-	// Find nodes that are currently UP but haven't heartbeated recently
+	// find stale nodes
 	rows, err := s.db.Query("SELECT id FROM nodes WHERE status = 'UP' AND last_heartbeat_at < ?", formatTime(deadline))
 	if err != nil {
-		log.Printf("Error querying stale nodes: %v", err)
+		log.Printf("failed to query stale nodes: %v", err)
 		return
 	}
 	defer rows.Close()
@@ -90,7 +90,7 @@ func (s *Server) detectStaleNodes() {
 	}
 
 	for _, nodeID := range staleNodeIDs {
-		log.Printf("Node %s is stale, marking DOWN and cleaning up jobs", nodeID)
+		log.Printf("Node %s is stale, marking DOWN", nodeID)
 		s.handleNodeOffline(nodeID)
 	}
 }
@@ -98,7 +98,7 @@ func (s *Server) detectStaleNodes() {
 func (s *Server) handleNodeOffline(nodeID string) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		log.Printf("Error starting transaction for node %s offline: %v", nodeID, err)
+		log.Printf("failed to offline node %s: %v", nodeID, err)
 		return
 	}
 	defer tx.Rollback()
@@ -114,8 +114,7 @@ func (s *Server) handleNodeOffline(nodeID string) {
 	}
 	s.events.Emit(events.TypeNodeOffline, nil, &nodeID, nil)
 
-	// 2. Find jobs on this node that are not in terminal state
-	// Transition them to LOST
+	// Find active jobs on this node
 	rows, err := tx.Query(`
 		SELECT j.id FROM jobs j
 		JOIN allocations a ON a.job_id = j.id
@@ -151,7 +150,7 @@ func (s *Server) handleNodeOffline(nodeID string) {
 		}
 	}
 
-	// 3. Mark any remaining allocations as LOST (e.g., if job was already terminal but allocation wasn't released)
+	// Mark remaining allocations as LOST
 	_, err = tx.Exec(`
 		UPDATE allocations SET status = 'LOST', released_at = ?
 		WHERE node_id = ? AND released_at IS NULL
@@ -178,7 +177,7 @@ func (s *Server) StartReconciliationLoop(interval time.Duration) {
 func (s *Server) reconcileCluster() {
 	rows, err := s.db.Query("SELECT id, addr FROM nodes WHERE status = 'UP'")
 	if err != nil {
-		log.Printf("Reconciler: error querying nodes: %v", err)
+		log.Printf("reconciliation failed: %v", err)
 		return
 	}
 	defer rows.Close()
@@ -236,14 +235,14 @@ func (s *Server) reconcileNode(nodeID, addr string) {
 		}
 
 		if !agentJobIDs[jobID] {
-			log.Printf("Reconciler: job %s is orphan on node %s, marking LOST", jobID, nodeID)
+			log.Printf("job %s orphan on node %s, marking LOST", jobID, nodeID)
 			s.markJobLost(jobID, "Process disappeared from agent")
 		}
 		delete(agentJobIDs, jobID)
 	}
 
 	for jobID := range agentJobIDs {
-		log.Printf("Reconciler: job %s is zombie on node %s, killing", jobID, nodeID)
+		log.Printf("job %s zombie on node %s, killing", jobID, nodeID)
 		s.killZombie(addr, jobID)
 	}
 }
@@ -327,7 +326,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 			addr = excluded.addr
 	`, req.NodeID, nowStr, req.AgentVersion, req.Addr)
 	if err != nil {
-		log.Printf("Heartbeat: error updating node %s: %v", req.NodeID, err)
+		log.Printf("heartbeat failed for node %s: %v", req.NodeID, err)
 		http.Error(w, "db error node update", http.StatusInternalServerError)
 		return
 	}
@@ -385,7 +384,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 			reportedJobs[id] = true
 		}
 
-		// Detect Orphans (DB says running, Agent says no)
+		// Detect orphans: DB expects job but agent doesn't report it
 		for id := range expectedJobs {
 			if !reportedJobs[id] {
 				log.Printf("Heartbeat: job %s missing from node %s (Orphan), marking LOST", id, req.NodeID)
@@ -393,7 +392,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Detect Zombies (Agent says running, DB says no)
+		// Detect zombies: agent reports job but DB doesn't expect it
 		for id := range reportedJobs {
 			if !expectedJobs[id] {
 				log.Printf("Heartbeat: job %s is zombie on node %s, killing", id, req.NodeID)
@@ -719,18 +718,18 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 		WHERE a.job_id = ?
 	`, jobID).Scan(&addr)
 	if err != nil {
-		// If no allocation found but not QUEUED, something is wrong, but let's just mark canceled
+		// Fallback: mark canceled if allocation missing
 		_, _ = s.db.Exec("UPDATE jobs SET state = ? WHERE id = ?", models.JobStateCanceled, jobID)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	// 1. Update job record and release resources FIRST to block races
-	log.Printf("Canceling job %s (owner: %s, state: %s)", jobID, user.ID, state)
+	// Mark job canceled and release resources
+	log.Printf("cancel job %s (owner: %s, state: %s)", jobID, user.ID, state)
 	s.markJobCanceled(jobID)
 
 	if addr != "" {
-		// 2. Notify agent SECOND
+		// Notify agent to terminate job
 		go func() {
 			url := fmt.Sprintf("%s/v1/agent/terminate", addr)
 			reqBody := map[string]string{"job_id": jobID}
