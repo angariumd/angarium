@@ -14,8 +14,6 @@ import (
 type NvidiaGPUProvider struct{}
 
 func (p *NvidiaGPUProvider) GetGPUs() ([]models.GPU, error) {
-	// Query nvidia-smi for GPU details
-	// index, uuid, name, memory.total
 	cmd := exec.Command("nvidia-smi", "--query-gpu=index,gpu_uuid,name,memory.total", "--format=csv,noheader,nounits")
 	output, err := cmd.Output()
 	if err != nil {
@@ -38,8 +36,7 @@ func (p *NvidiaGPUProvider) GetGPUs() ([]models.GPU, error) {
 		}
 
 		idx, _ := strconv.Atoi(record[0])
-		uuid := strings.TrimPrefix(record[1], "GPU-") // Keep it clean but mostly stick to what nvidia-smi gives
-		uuid = record[1]
+		uuid := record[1]
 
 		name := record[2]
 		memTotal, _ := strconv.Atoi(record[3])

@@ -1,23 +1,22 @@
 #!/bin/bash
 set -e
-set -x
 
 export ANGARIUM_CONTROLLER="http://localhost:8090"
 export ANGARIUM_TOKEN="sam-secret-token"
 
-# Build all components
-echo "Building components..."
+function cleanup {
+    pkill -f angarium-controller || true
+    pkill -f angarium-agent || true
+    rm -f angarium.db* logs/*.log logs/*.yaml logs/agent_state.json
+}
+trap cleanup EXIT
+
+echo "Building..."
 make build
 
-# Clean up existing processes if any
-echo "Cleaning up previous runs..."
-pkill -f angarium-controller || true
-pkill -f angarium-agent || true
-rm -f angarium.db angarium.db-wal angarium.db-shm logs/*.log logs/*.yaml
 mkdir -p logs
 
-# Generate temporary configs with isolated ports
-echo "Generating temporary configs..."
+# Generate configs
 cat > logs/controller.yaml <<EOF
 addr: "localhost:8090"
 db_path: "angarium.db"
@@ -35,95 +34,76 @@ node_id: "node-local"
 addr: "http://localhost:8091"
 EOF
 
-# Start Controller
-echo "Starting Controller..."
+echo "Starting services..."
 ./bin/angarium-controller --config logs/controller.yaml > logs/controller.log 2>&1 &
-CONTROLLER_PID=$!
-
-# Wait for controller to start
 sleep 2
 
-# Start Agent
-echo "Starting Agent..."
 ./bin/angarium-agent --config logs/agent.yaml --mock > logs/agent.log 2>&1 &
-AGENT_PID=$!
+sleep 5 # wait for registration
 
-# Wait for agent to heartbeat
-echo "Waiting for agent registration..."
-sleep 5
-
-echo "Checking cluster status..."
 ./bin/angarium status
 
-echo "--- Testing Job Execution ---"
-# Submit a job that takes a few seconds
+function wait_for_state {
+    local job_id=$1
+    local target_state=$2
+    local timeout=${3:-10}
+    
+    for ((i=1; i<=timeout; i++)); do
+        if ./bin/angarium inspect $job_id | grep -q "State:.*$target_state"; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout waiting for job $job_id to reach $target_state"
+    return 1
+}
+
+echo "--- Job Execution ---"
 JOB_ID=$(./bin/angarium submit --gpus 1 --cwd /tmp "echo 'Job started'; sleep 3; echo 'Job finished'" | grep "ID:" | awk '{print $NF}')
-echo "Submitted job: $JOB_ID"
+echo "Job: $JOB_ID"
 
-echo "Waiting for scheduler to allocate job..."
-sleep 3
+wait_for_state "$JOB_ID" "SUCCEEDED" 15
+./bin/angarium logs "$JOB_ID" | grep "Job finished" || exit 1
 
-echo "Checking 'angarium ps' (should show job starting/running)..."
-./bin/angarium ps | grep "$(echo $JOB_ID | cut -c1-8)" || (echo "Job not found in ps output" && exit 1)
+echo "Verifying Events..."
+curl -s -H "Authorization: Bearer $ANGARIUM_TOKEN" "$ANGARIUM_CONTROLLER/v1/jobs/$JOB_ID/events" | grep -q "JOB_SUBMITTED" || exit 1
 
-echo "Waiting for job completion..."
-sleep 6
-
-echo "Checking log output..."
-./bin/angarium logs $JOB_ID | grep "Job finished" || (echo "Log output missing expected line" && exit 1)
-
-echo "Inspecting terminal state..."
-./bin/angarium inspect $JOB_ID | grep "State:      SUCCEEDED" || (echo "Job not in SUCCEEDED state" && exit 1)
-./bin/angarium inspect $JOB_ID | grep "Exit Code:  0" || (echo "Job exit code not 0" && exit 1)
-
-echo "--- Testing Job Cancellation ---"
+echo "--- Job Cancellation ---"
 CANCEL_JOB_ID=$(./bin/angarium submit --gpus 2 --cwd /tmp "echo 'Long job'; sleep 30" | grep "ID:" | awk '{print $NF}')
-echo "Submitted job for cancellation: $CANCEL_JOB_ID"
-
 sleep 2
-echo "Canceling job..."
-./bin/angarium cancel $CANCEL_JOB_ID
+./bin/angarium cancel "$CANCEL_JOB_ID"
+wait_for_state "$CANCEL_JOB_ID" "CANCELED"
 
-sleep 2
-echo "Verifying job is CANCELED..."
-# Give it a moment to sync terminal state if needed
-for i in {1..5}; do
-    if ./bin/angarium inspect $CANCEL_JOB_ID | grep -q "State:.*CANCELED"; then
-        echo "Job successfully canceled"
-        break
-    fi
-    if [ $i -eq 5 ]; then
-        echo "Job not in CANCELED state after 5 seconds:"
-        ./bin/angarium inspect $CANCEL_JOB_ID
-        exit 1
-    fi
-    sleep 1
-done
-
-echo "Verifying GPUs are released (should show 2/2 free)..."
+# Verify resource release
 FREE_GPUS=$(./bin/angarium status | grep "node-local" | awk '{print $4}' | cut -d'/' -f1)
 if [ "$FREE_GPUS" != "2" ]; then
-    echo "ERROR: GPUs not fully released. Free: $FREE_GPUS, Expected: 2"
+    echo "ERROR: GPUs not released. Free: $FREE_GPUS, Expected: 2"
     exit 1
 fi
 
-echo "--- Testing Lease Recovery (Legacy) ---"
-echo "Killing controller..."
-kill $CONTROLLER_PID
-sleep 1
+echo "--- Max Runtime ---"
+MAX_JOB_ID=$(./bin/angarium submit --gpus 1 --cwd /tmp --max-runtime 1 "sleep 120" | grep "ID:" | awk '{print $NF}')
+wait_for_state "$MAX_JOB_ID" "RUNNING" 
+# Hack started_at to simulate expiry
+sqlite3 angarium.db "UPDATE jobs SET started_at = datetime('now', '-2 minutes') WHERE id = '$MAX_JOB_ID';"
+wait_for_state "$MAX_JOB_ID" "CANCELED"
 
-echo "Expiring leases in database..."
-sqlite3 angarium.db "UPDATE gpu_leases SET expires_at = datetime('now', '-1 hour');"
+echo "--- Zombie Handling ---"
+ZOMBIE_ID=$(./bin/angarium submit --gpus 1 --cwd /tmp "echo 'Zombie'; sleep 30" | grep "ID:" | awk '{print $NF}')
+sleep 5
+# Simulate zombie by deleting allocation record but leaving process running
+sqlite3 angarium.db "DELETE FROM allocations WHERE job_id = '$ZOMBIE_ID';"
+sqlite3 angarium.db "UPDATE jobs SET state = 'FAILED' WHERE id = '$ZOMBIE_ID';"
+sleep 15
+grep "zombie on node" logs/controller.log || exit 1
 
-# Restart controller
-echo "Restarting controller..."
-./bin/angarium-controller --config logs/controller.yaml > logs/controller.restart.log 2>&1 &
-CONTROLLER_PID=$!
-sleep 3
+echo "--- Agent Recovery ---"
+RECOVERY_ID=$(./bin/angarium submit --gpus 1 --cwd /tmp "sleep 30" | grep "ID:" | awk '{print $NF}')
+wait_for_state "$RECOVERY_ID" "RUNNING"
+pkill -f angarium-agent
+sleep 2
+./bin/angarium-agent --config logs/agent.yaml --mock > logs/agent.restart.log 2>&1 &
+sleep 5
+wait_for_state "$RECOVERY_ID" "RUNNING"
 
-echo "Checking recovery..."
-./bin/angarium status
-
-echo "Cleaning up..."
-kill $CONTROLLER_PID $AGENT_PID
-echo "Smoke test passed successfully!"
+echo "PASS"

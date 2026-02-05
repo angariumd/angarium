@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -12,25 +13,16 @@ type DB struct {
 }
 
 func Open(path string) (*DB, error) {
-	// Use _txlock=immediate to avoid deadlocks during concurrent writes
-	dsn := fmt.Sprintf("%s?_txlock=immediate", path)
+	// _txlock=immediate avoids deadlocks during concurrent writes
+	dsn := fmt.Sprintf("%s?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	// Optimization pragmas for SQLite
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL;",
-		"PRAGMA synchronous=NORMAL;",
-		"PRAGMA busy_timeout=5000;",
-		"PRAGMA foreign_keys=ON;",
-	}
-	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
-			return nil, fmt.Errorf("setting pragma %q: %w", p, err)
-		}
-	}
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	return &DB{conn: db}, nil
 }
@@ -76,6 +68,8 @@ func (d *DB) Init() error {
 		command TEXT NOT NULL,
 		cwd TEXT NOT NULL,
 		env_json TEXT NOT NULL,
+		retry_count INTEGER NOT NULL DEFAULT 0,
+		max_runtime_minutes INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME NOT NULL,
 		queued_at DATETIME NOT NULL,
 		started_at DATETIME,
@@ -93,6 +87,10 @@ func (d *DB) Init() error {
 		node_id TEXT,
 		payload_json TEXT
 	);
+
+	CREATE INDEX IF NOT EXISTS idx_events_job_id ON events(job_id);
+	CREATE INDEX IF NOT EXISTS idx_events_node_id ON events(node_id);
+	CREATE INDEX IF NOT EXISTS idx_events_at ON events(at);
 
 	CREATE TABLE IF NOT EXISTS allocations (
 		id TEXT PRIMARY KEY,

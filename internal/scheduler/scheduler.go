@@ -10,28 +10,36 @@ import (
 	"time"
 
 	"github.com/angariumd/angarium/internal/db"
+	"github.com/angariumd/angarium/internal/events"
 	"github.com/angariumd/angarium/internal/models"
 	"github.com/google/uuid"
 )
+
+const SQLTimeLayout = "2006-01-02 15:04:05"
+
+func formatTime(t time.Time) string {
+	return t.UTC().Format(SQLTimeLayout)
+}
 
 const DefaultLeaseDuration = 1 * time.Minute
 
 type Scheduler struct {
 	db         *db.DB
+	events     *events.EventManager
 	AgentToken string
 }
 
-func New(db *db.DB, agentToken string) *Scheduler {
+func New(db *db.DB, events *events.EventManager, agentToken string) *Scheduler {
 	return &Scheduler{
 		db:         db,
+		events:     events,
 		AgentToken: agentToken,
 	}
 }
 
 func (s *Scheduler) Run(ctx context.Context, interval time.Duration) {
-	// Initial passes for recovery and pending jobs
-	s.CleanupLeases(ctx)
-	s.Schedule(ctx)
+	s.CleanupLeases()
+	s.Schedule()
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -41,13 +49,14 @@ func (s *Scheduler) Run(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.Schedule(ctx)
-			s.CleanupLeases(ctx)
+			s.Schedule()
+			s.CleanupLeases()
+			s.EnforceMaxRuntime()
 		}
 	}
 }
 
-func (s *Scheduler) Schedule(ctx context.Context) {
+func (s *Scheduler) Schedule() {
 	jobs, err := s.getQueuedJobs()
 	if err != nil {
 		log.Printf("Scheduler: error getting queued jobs: %v", err)
@@ -103,18 +112,16 @@ func (s *Scheduler) tryScheduleJob(job models.Job) error {
 	}
 
 	if len(stats.nodes) == 0 {
-		return s.updateJobReason(job.ID, "No nodes are currently UP")
+		return s.updateJobReason(job.ID, "no nodes UP")
 	}
 
-	// 1. Check if the job is physically satisfyable by the cluster (hardware check)
 	if stats.totalHealthyGPUs < job.GPUCount {
-		return s.updateJobReason(job.ID, fmt.Sprintf("Cluster only has %d healthy GPUs total, but job requires %d", stats.totalHealthyGPUs, job.GPUCount))
+		return s.updateJobReason(job.ID, fmt.Sprintf("insufficient cluster capacity: %d/%d", stats.totalHealthyGPUs, job.GPUCount))
 	}
 	if stats.maxHealthySingleNode < job.GPUCount {
-		return s.updateJobReason(job.ID, fmt.Sprintf("No single node has %d GPUs (max capacity is %d)", job.GPUCount, stats.maxHealthySingleNode))
+		return s.updateJobReason(job.ID, fmt.Sprintf("no node can fit %d GPUs (max %d)", job.GPUCount, stats.maxHealthySingleNode))
 	}
 
-	// 2. Hardware exists, check if it's currently available (occupancy check)
 	var bestNode *nodeCapacity
 	for i := range stats.nodes {
 		if len(stats.nodes[i].available) >= job.GPUCount {
@@ -127,19 +134,16 @@ func (s *Scheduler) tryScheduleJob(job models.Job) error {
 	if bestNode == nil {
 		if stats.totalAvailableGPUs < job.GPUCount {
 			busyCount := stats.totalHealthyGPUs - stats.totalAvailableGPUs
-			return s.updateJobReason(job.ID, fmt.Sprintf("Waiting for GPUs to be released (%d GPUs currently busy/leased)", busyCount))
+			return s.updateJobReason(job.ID, fmt.Sprintf("waiting for GPUs (%d busy)", busyCount))
 		}
-		// If totalAvailable >= job.GPUCount but bestNode is still nil, it means fragmentation
-		return s.updateJobReason(job.ID, fmt.Sprintf("Waiting for a single node to have %d free GPUs (fragmented: %d total free across nodes)", job.GPUCount, stats.totalAvailableGPUs))
+		return s.updateJobReason(job.ID, fmt.Sprintf("fragmented: %d free total, but none fit %d", stats.totalAvailableGPUs, job.GPUCount))
 	}
 
-	// Found a node! Select the first N GPUs (best-fit packing already decided the node)
 	selectedGPUs := bestNode.available[:job.GPUCount]
 	return s.allocateJob(job, bestNode.nodeID, selectedGPUs)
 }
 
 func (s *Scheduler) getClusterStats() (*clusterStats, error) {
-	// 1. Get all UP nodes
 	rows, err := s.db.Query("SELECT id FROM nodes WHERE status = 'UP'")
 	if err != nil {
 		return nil, err
@@ -160,13 +164,14 @@ func (s *Scheduler) getClusterStats() (*clusterStats, error) {
 		return stats, nil
 	}
 
+	now := time.Now().UTC()
 	for _, nodeID := range nodeIDs {
 		gpuRows, err := s.db.Query(`
 			SELECT g.id, g.node_id, g.idx, g.uuid, g.name, g.memory_mb, g.health, g.last_seen_at,
-			       (SELECT COUNT(*) FROM gpu_leases l WHERE l.gpu_id = g.id AND l.expires_at > datetime('now')) as is_leased
+			       (SELECT COUNT(*) FROM gpu_leases l WHERE l.gpu_id = g.id AND l.expires_at > ?) as is_leased
 			FROM gpus g
 			WHERE g.node_id = ? AND g.health = 'OK'
-		`, nodeID)
+		`, formatTime(now), nodeID)
 		if err != nil {
 			return nil, err
 		}
@@ -207,30 +212,29 @@ func (s *Scheduler) allocateJob(job models.Job, nodeID string, gpus []models.GPU
 	defer tx.Rollback()
 
 	allocationID := uuid.New().String()
-	now := time.Now()
+	now := time.Now().UTC()
 	expiresAt := now.Add(DefaultLeaseDuration) // Initial lease for starting
+	nowStr := formatTime(now)
+	expiresAtStr := formatTime(expiresAt)
 
-	// 1. Update Job state
 	_, err = tx.Exec("UPDATE jobs SET state = ?, reason = NULL WHERE id = ?", models.JobStateAllocated, job.ID)
 	if err != nil {
 		return err
 	}
 
-	// 2. Create Allocation
 	_, err = tx.Exec(`
 		INSERT INTO allocations (id, job_id, node_id, status, created_at)
 		VALUES (?, ?, ?, ?, ?)
-	`, allocationID, job.ID, nodeID, "ALLOCATED", now)
+	`, allocationID, job.ID, nodeID, "ALLOCATED", nowStr)
 	if err != nil {
 		return err
 	}
 
-	// 3. Create GPU Leases
 	for _, gpu := range gpus {
 		_, err = tx.Exec(`
 			INSERT INTO gpu_leases (gpu_id, allocation_id, leased_at, expires_at)
 			VALUES (?, ?, ?, ?)
-		`, gpu.ID, allocationID, now, expiresAt)
+		`, gpu.ID, allocationID, nowStr, expiresAtStr)
 		if err != nil {
 			return err
 		}
@@ -240,8 +244,12 @@ func (s *Scheduler) allocateJob(job models.Job, nodeID string, gpus []models.GPU
 		return err
 	}
 
-	// 4. Notify Agent
+	// Don't block the scheduler loop on agent notification
 	go s.notifyAgentLaunch(job, nodeID, gpus)
+
+	s.events.Emit(events.TypeJobAllocated, &job.ID, &nodeID, map[string]any{
+		"gpu_count": len(gpus),
+	})
 
 	return nil
 }
@@ -297,11 +305,121 @@ func (s *Scheduler) updateJobReason(jobID string, reason string) error {
 	return err
 }
 
-func (s *Scheduler) CleanupLeases(ctx context.Context) {
-	// Clean up leases that have expired
-	// In the future, we should only clean up if the job hasn't moved beyond ALLOCATED/STARTING
-	_, err := s.db.Exec("DELETE FROM gpu_leases WHERE expires_at < datetime('now')")
+func (s *Scheduler) CleanupLeases() {
+	if err := s.handleStalledJobs(); err != nil {
+		log.Printf("Scheduler: stalled job cleanup failed: %v", err)
+	}
+
+	if err := s.pruneExpiredLeases(); err != nil {
+		log.Printf("Scheduler: lease pruning failed: %v", err)
+	}
+}
+
+func (s *Scheduler) handleStalledJobs() error {
+	nowStr := formatTime(time.Now())
+
+	// Jobs are "stuck" if their lease expired but they're still in starting/allocated state
+	rows, err := s.db.Query(`
+		SELECT j.id, j.retry_count 
+		FROM jobs j
+		JOIN allocations a ON a.job_id = j.id
+		JOIN gpu_leases l ON l.allocation_id = a.id
+		WHERE l.expires_at < ?
+		AND j.state IN (?, ?)
+		GROUP BY j.id
+	`, nowStr, models.JobStateAllocated, models.JobStateStarting)
 	if err != nil {
-		log.Printf("Scheduler: error cleaning up leases: %v", err)
+		return fmt.Errorf("querying stuck jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []struct {
+		ID         string
+		RetryCount int
+	}
+
+	for rows.Next() {
+		var j struct {
+			ID         string
+			RetryCount int
+		}
+		if err := rows.Scan(&j.ID, &j.RetryCount); err == nil {
+			jobs = append(jobs, j)
+		}
+	}
+	rows.Close()
+
+	for _, j := range jobs {
+		if j.RetryCount < 3 {
+			log.Printf("job %s stalled, retrying (%d/3)...", j.ID, j.RetryCount+1)
+			s.db.Exec(`
+				UPDATE jobs 
+				SET state = ?, retry_count = retry_count + 1, reason = 'allocation timeout, retrying', queued_at = ?, started_at = NULL
+				WHERE id = ?
+			`, models.JobStateQueued, nowStr, j.ID)
+			s.events.Emit(events.TypeLeaseExpired, &j.ID, nil, map[string]int{"retry_count": j.RetryCount + 1})
+		} else {
+			log.Printf("job %s stalled too many times, marking FAILED", j.ID)
+			s.db.Exec(`
+				UPDATE jobs 
+				SET state = ?, finished_at = ?, reason = 'allocation timeout: max retries exceeded'
+				WHERE id = ?
+			`, models.JobStateFailed, nowStr, j.ID)
+			s.events.Emit(events.TypeJobLost, &j.ID, nil, map[string]string{"reason": "max_retries_exceeded"})
+		}
+
+		// Orphan the allocation so the GPUs can be reclaimed eventually
+		s.db.Exec(`
+			UPDATE allocations 
+			SET status = 'RELEASED', released_at = ? 
+			WHERE job_id = ? AND released_at IS NULL
+		`, nowStr, j.ID)
+	}
+	return nil
+}
+
+func (s *Scheduler) pruneExpiredLeases() error {
+	_, err := s.db.Exec("DELETE FROM gpu_leases WHERE expires_at < ?", formatTime(time.Now()))
+	return err
+}
+
+func (s *Scheduler) EnforceMaxRuntime() {
+	nowStr := formatTime(time.Now())
+	rows, err := s.db.Query(`
+		SELECT id FROM jobs 
+		WHERE state IN (?, ?) 
+		AND max_runtime_minutes > 0 
+		AND started_at IS NOT NULL
+		AND datetime(started_at, '+' || max_runtime_minutes || ' minutes') < datetime(?)
+	`, models.JobStateRunning, models.JobStateStarting, nowStr)
+	if err != nil {
+		log.Printf("Scheduler: error checking max runtime: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var expiredIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			expiredIDs = append(expiredIDs, id)
+		}
+	}
+	rows.Close()
+
+	for _, id := range expiredIDs {
+		log.Printf("job %s exceeded max runtime, canceling", id)
+		s.db.Exec(`
+			UPDATE jobs 
+			SET state = ?, finished_at = ?, reason = 'runtime exceeded' 
+			WHERE id = ?
+		`, models.JobStateCanceled, nowStr, id)
+		s.events.Emit(events.TypeMaxRuntimeExcd, &id, nil, nil)
+
+		s.db.Exec(`
+			UPDATE allocations 
+			SET status = 'CANCELED', released_at = ? 
+			WHERE job_id = ? AND released_at IS NULL
+		`, nowStr, id)
 	}
 }

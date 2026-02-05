@@ -31,11 +31,10 @@ func TestJobRunner_Start(t *testing.T) {
 		t.Errorf("job failed: %v", err)
 	}
 
-	// Verify log file exists and contains output
 	logFile := filepath.Join(logDir, "test-job-1.log")
 	content, err := os.ReadFile(logFile)
 	if err != nil {
-		t.Fatalf("failed to read log: %v", err)
+		t.Fatal(err)
 	}
 
 	sContent := string(content)
@@ -63,8 +62,7 @@ func TestJobRunner_Stop(t *testing.T) {
 		t.Fatalf("failed to start: %v", err)
 	}
 
-	// Give it a moment to actually start
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // wait for exec
 
 	pid := runner.PID()
 	if pid == 0 {
@@ -81,7 +79,7 @@ func TestJobRunner_Stop(t *testing.T) {
 		t.Errorf("stop took too long: %v", duration)
 	}
 
-	// Wait should return an error because it was signaled
+	// should fail due to signal
 	err := runner.Wait()
 	if err == nil {
 		t.Errorf("expected error from Wait() after Stop()")

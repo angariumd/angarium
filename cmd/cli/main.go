@@ -82,16 +82,18 @@ func main() {
 
 	var gpuCount int
 	var cwd string
+	var maxRuntime int
 	submitCmd := &cobra.Command{
 		Use:   "submit [command...]",
 		Short: "Submit a new job",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return submitJob(gpuCount, cwd, strings.Join(args, " "))
+			return submitJob(gpuCount, cwd, strings.Join(args, " "), maxRuntime)
 		},
 	}
 	submitCmd.Flags().IntVar(&gpuCount, "gpus", 1, "Number of GPUs requested")
 	submitCmd.Flags().StringVar(&cwd, "cwd", "", "Current working directory (mandatory)")
+	submitCmd.Flags().IntVar(&maxRuntime, "max-runtime", 0, "Maximum runtime in minutes (optional)")
 	submitCmd.MarkFlagRequired("cwd")
 
 	statusCmd := &cobra.Command{
@@ -268,11 +270,12 @@ func inspectJob(cmd *cobra.Command, args []string) error {
 	return fmt.Errorf("job not found: %s", fullID)
 }
 
-func submitJob(gpuCount int, cwd, command string) error {
+func submitJob(gpuCount int, cwd, command string, maxRuntime int) error {
 	reqBody := map[string]any{
-		"gpu_count": gpuCount,
-		"cwd":       cwd,
-		"command":   command,
+		"gpu_count":           gpuCount,
+		"cwd":                 cwd,
+		"command":             command,
+		"max_runtime_minutes": maxRuntime,
 	}
 	body, _ := json.Marshal(reqBody)
 

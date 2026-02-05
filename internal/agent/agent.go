@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/angariumd/angarium/internal/models"
@@ -28,7 +29,7 @@ type Agent struct {
 }
 
 func NewAgent(nodeID, controllerURL string, gpuProvider GPUProvider, version, addr, sharedToken string) *Agent {
-	return &Agent{
+	a := &Agent{
 		nodeID:        nodeID,
 		controllerURL: controllerURL,
 		gpuProvider:   gpuProvider,
@@ -38,6 +39,11 @@ func NewAgent(nodeID, controllerURL string, gpuProvider GPUProvider, version, ad
 		sharedToken:   sharedToken,
 		activeJobs:    make(map[string]*JobRunner),
 	}
+
+	// Restore state if useful (e.g. after a crash/restart)
+	a.loadState()
+
+	return a
 }
 
 func (a *Agent) Routes() http.Handler {
@@ -69,14 +75,13 @@ func (a *Agent) handleLaunch(w http.ResponseWriter, r *http.Request) {
 
 	a.mu.Lock()
 	a.activeJobs[req.Job.ID] = runner
+	a.saveStateLocked()
 	a.mu.Unlock()
 
-	// Report STARTING state to controller
-	go a.updateJobStatus(req.Job.ID, models.JobStateStarting, nil)
-
-	// Wait for process to start properly (could be immediate)
+	// Async launch: verify start -> wait -> cleanup
 	go func() {
-		// Report RUNNING state
+		a.updateJobStatus(req.Job.ID, models.JobStateStarting, nil)
+
 		a.updateJobStatus(req.Job.ID, models.JobStateRunning, nil)
 
 		err := runner.Wait()
@@ -97,6 +102,7 @@ func (a *Agent) handleLaunch(w http.ResponseWriter, r *http.Request) {
 
 		a.mu.Lock()
 		delete(a.activeJobs, req.Job.ID)
+		a.saveStateLocked()
 		a.mu.Unlock()
 		a.updateJobStatus(req.Job.ID, state, exitCode)
 	}()
@@ -167,7 +173,7 @@ func (a *Agent) updateJobStatus(jobID string, state models.JobState, exitCode *i
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		fmt.Printf("Error updating job status: %v\n", err)
+		fmt.Printf("status update failed: %v\n", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -187,7 +193,6 @@ func (a *Agent) handleLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Transfer-Encoding", "chunked")
 
-	// Read everything current
 	_, _ = io.Copy(w, f)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
@@ -197,7 +202,7 @@ func (a *Agent) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stream new data as it arrives
+	// Stream updates
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -206,19 +211,17 @@ func (a *Agent) handleLogs(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			// Just copy any new data
 			_, _ = io.Copy(w, f)
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
 
-			// If job is no longer active, we should eventually stop
+			// Stop streaming when job completes
 			a.mu.Lock()
 			_, active := a.activeJobs[jobID]
 			a.mu.Unlock()
 
 			if !active {
-				// Final copy
 				_, _ = io.Copy(w, f)
 				return
 			}
@@ -228,8 +231,7 @@ func (a *Agent) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 func (a *Agent) StartHeartbeat(interval time.Duration) {
 	ticker := time.NewTicker(interval)
-	// Initial heartbeat
-	a.sendHeartbeat()
+	a.sendHeartbeat() // immediate first beat
 
 	go func() {
 		for range ticker.C {
@@ -243,20 +245,29 @@ type HeartbeatRequest struct {
 	AgentVersion string       `json:"agent_version"`
 	Addr         string       `json:"addr"`
 	GPUs         []models.GPU `json:"gpus"`
+	ActiveJobIDs []string     `json:"active_job_ids"`
 }
 
 func (a *Agent) sendHeartbeat() {
 	gpus, err := a.gpuProvider.GetGPUs()
 	if err != nil {
-		fmt.Printf("Error getting GPUs: %v\n", err)
+		fmt.Printf("failed to query GPUs: %v\n", err)
 		return
 	}
+
+	a.mu.Lock()
+	activeIDs := make([]string, 0, len(a.activeJobs))
+	for id := range a.activeJobs {
+		activeIDs = append(activeIDs, id)
+	}
+	a.mu.Unlock()
 
 	req := HeartbeatRequest{
 		NodeID:       a.nodeID,
 		AgentVersion: a.version,
 		Addr:         a.addr,
 		GPUs:         gpus,
+		ActiveJobIDs: activeIDs,
 	}
 
 	body, _ := json.Marshal(req)
@@ -275,5 +286,67 @@ func (a *Agent) sendHeartbeat() {
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Printf("Heartbeat failed with status: %d\n", resp.StatusCode)
+	}
+}
+
+type PersistentState struct {
+	ActiveJobs []struct {
+		JobID string `json:"job_id"`
+		PID   int    `json:"pid"`
+	} `json:"active_jobs"`
+}
+
+func (a *Agent) statePath() string {
+	return filepath.Join(a.logDir, "agent_state.json")
+}
+
+func (a *Agent) saveState() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.saveStateLocked()
+}
+
+func (a *Agent) saveStateLocked() {
+	state := PersistentState{}
+	for id, runner := range a.activeJobs {
+		pid := runner.PID()
+		if pid > 0 {
+			state.ActiveJobs = append(state.ActiveJobs, struct {
+				JobID string `json:"job_id"`
+				PID   int    `json:"pid"`
+			}{JobID: id, PID: pid})
+		}
+	}
+
+	data, _ := json.MarshalIndent(state, "", "  ")
+	_ = os.WriteFile(a.statePath(), data, 0644)
+}
+
+func (a *Agent) loadState() {
+	data, err := os.ReadFile(a.statePath())
+	if err != nil {
+		return // No state to load or error reading
+	}
+
+	var state PersistentState
+	if err := json.Unmarshal(data, &state); err != nil {
+		fmt.Printf("Error unmarshaling state: %v\n", err)
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for _, j := range state.ActiveJobs {
+		// Check if process is alive
+		// os.FindProcess always succeeds on Unix, verify with signal 0
+		proc, err := os.FindProcess(j.PID)
+		if err == nil {
+			if err := proc.Signal(syscall.Signal(0)); err == nil {
+				// Process alive, recover it
+				fmt.Printf("Recovering job %s (PID %d)\n", j.JobID, j.PID)
+				a.activeJobs[j.JobID] = NewRecoveredJobRunner(models.Job{ID: j.JobID}, j.PID)
+			}
+		}
 	}
 }

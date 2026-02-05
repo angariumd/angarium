@@ -17,6 +17,7 @@ type JobRunner struct {
 	gpuUUIDs     []string
 	logDir       string
 	cmd          *exec.Cmd
+	monitoredPID int
 	err          error
 	finishedChan chan struct{}
 }
@@ -30,8 +31,56 @@ func NewJobRunner(job models.Job, gpuUUIDs []string, logDir string) *JobRunner {
 	}
 }
 
+func NewRecoveredJobRunner(job models.Job, pid int) *JobRunner {
+	r := &JobRunner{
+		job:          job,
+		monitoredPID: pid,
+		finishedChan: make(chan struct{}),
+	}
+
+	go func() {
+		// Poll for process existence
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			if err := syscall.Kill(pid, 0); err != nil {
+				// Process is gone
+				close(r.finishedChan)
+				return
+			}
+		}
+	}()
+
+	return r
+}
+
+// 50 MB limit
+const MaxLogSize = 50 * 1024 * 1024
+
+type LimitWriter struct {
+	w       *os.File
+	written int64
+	limit   int64
+}
+
+func (l *LimitWriter) Write(p []byte) (n int, err error) {
+	if l.written >= l.limit {
+		return len(p), nil // Silently discard
+	}
+	if l.written+int64(len(p)) > l.limit {
+		remaining := l.limit - l.written
+		l.w.Write(p[:remaining])
+		l.w.WriteString("\n[LOG LIMIT EXCEEDED - TRUNCATED]\n")
+		l.written += int64(len(p))
+		return len(p), nil
+	}
+	n, err = l.w.Write(p)
+	l.written += int64(n)
+	return n, err
+}
+
 func (r *JobRunner) Start() error {
-	// 1. Prepare log file
 	if err := os.MkdirAll(r.logDir, 0755); err != nil {
 		return fmt.Errorf("creating log dir: %w", err)
 	}
@@ -41,13 +90,15 @@ func (r *JobRunner) Start() error {
 		return fmt.Errorf("creating log file: %w", err)
 	}
 
-	// 2. Prepare command
+	// Cap logs to prevent disk exhaustion
+	limitWriter := &LimitWriter{w: f, limit: MaxLogSize}
+
 	r.cmd = exec.Command("sh", "-c", r.job.Command)
 	r.cmd.Dir = r.job.CWD
-	r.cmd.Stdout = f
-	r.cmd.Stderr = f
+	r.cmd.Stdout = limitWriter
+	r.cmd.Stderr = limitWriter
 
-	// 3. Set environment variables
+	// Environment variables
 	var env []string
 	if r.job.EnvJSON != "" {
 		var envMap map[string]string
@@ -57,8 +108,8 @@ func (r *JobRunner) Start() error {
 			}
 		}
 	}
-	// Add CUDA_VISIBLE_DEVICES
-	// Add CUDA_VISIBLE_DEVICES isolation
+
+	// GPU isolation
 	if len(r.gpuUUIDs) > 0 {
 		visibleStr := ""
 		for i, uuid := range r.gpuUUIDs {
@@ -71,12 +122,11 @@ func (r *JobRunner) Start() error {
 	}
 	r.cmd.Env = append(os.Environ(), env...)
 
-	// 4. Set process group
+	// New process group for clean signal handling
 	r.cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
 
-	// 5. Start command
 	if err := r.cmd.Start(); err != nil {
 		f.Close()
 		return fmt.Errorf("starting command: %w", err)
@@ -97,6 +147,19 @@ func (r *JobRunner) Wait() error {
 }
 
 func (r *JobRunner) Stop() error {
+	if r.monitoredPID > 0 {
+		// Recovered job
+		syscall.Kill(r.monitoredPID, syscall.SIGTERM)
+		// Wait grace period
+		select {
+		case <-r.finishedChan:
+			return nil
+		case <-time.After(5 * time.Second):
+			syscall.Kill(r.monitoredPID, syscall.SIGKILL)
+			return nil
+		}
+	}
+
 	if r.cmd == nil || r.cmd.Process == nil {
 		return nil
 	}
@@ -133,6 +196,9 @@ func (r *JobRunner) Stop() error {
 }
 
 func (r *JobRunner) PID() int {
+	if r.monitoredPID > 0 {
+		return r.monitoredPID
+	}
 	if r.cmd != nil && r.cmd.Process != nil {
 		return r.cmd.Process.Pid
 	}
