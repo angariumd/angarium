@@ -23,3 +23,6 @@ Provide a minimal GPU-first scheduler without the overhead of Kubernetes, contai
 
 ## API Summary
 See [docs/api.md](docs/api.md) for details.
+
+## License
+Apache License 2.0. See [LICENSE](LICENSE) for details.
