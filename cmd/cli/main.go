@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
@@ -110,17 +111,64 @@ func main() {
 	}
 
 	loginCmd := &cobra.Command{
-		Use:   "login <token>",
+		Use:   "login",
 		Short: "Login with an API token",
-		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, _ := config.LoadCLIConfig()
-			cfg.Token = args[0]
-			cfg.ControllerURL = controllerURL
+
+			defaultURL := controllerURL
+			if cfg.ControllerURL != "" {
+				defaultURL = cfg.ControllerURL
+			}
+			fmt.Printf("Controller URL [%s]: ", defaultURL)
+			scanner := bufio.NewScanner(os.Stdin)
+			newURL := defaultURL
+			if scanner.Scan() {
+				input := strings.TrimSpace(scanner.Text())
+				if input != "" {
+					newURL = input
+				}
+			}
+
+			fmt.Printf("API Token: ")
+			newToken := ""
+			if scanner.Scan() {
+				newToken = strings.TrimSpace(scanner.Text())
+			}
+			if newToken == "" {
+				return fmt.Errorf("token is required")
+			}
+
+			fmt.Printf("Verifying token... ")
+
+			oldURL := controllerURL
+			oldToken := token
+			controllerURL = newURL
+			token = newToken
+
+			resp, err := request("GET", "/v1/nodes", nil)
+			if err != nil {
+				controllerURL = oldURL
+				token = oldToken
+				fmt.Printf("FAILED\n")
+				return fmt.Errorf("verification failed: %v", err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				controllerURL = oldURL
+				token = oldToken
+				fmt.Printf("FAILED\n")
+				return fmt.Errorf("verification failed: returned status %d", resp.StatusCode)
+			}
+			fmt.Printf("OK\n")
+
+			cfg.Token = newToken
+			cfg.ControllerURL = newURL
 			if err := config.SaveCLIConfig(cfg); err != nil {
 				return err
 			}
-			fmt.Printf("Logged in to %s\n", controllerURL)
+			fmt.Printf("Logged in successfully to %s\n", newURL)
 			return nil
 		},
 	}
@@ -130,7 +178,27 @@ func main() {
 		Short: "Show current user and controller",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Printf("Controller: %s\n", controllerURL)
-			fmt.Printf("Token:      %s... (prefix)\n", token[:min(len(token), 8)])
+
+			resp, err := request("GET", "/v1/whoami", nil)
+			if err != nil {
+				fmt.Printf("Token:      %s... (prefix)\n", token[:min(len(token), 8)])
+				return nil
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				fmt.Printf("Token:      %s... (prefix)\n", token[:min(len(token), 8)])
+				return nil
+			}
+
+			var user models.User
+			if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+				fmt.Printf("Token:      %s... (prefix)\n", token[:min(len(token), 8)])
+				return nil
+			}
+
+			fmt.Printf("User:        %s\n", user.Name)
+			fmt.Printf("User ID:     %s\n", user.ID)
 			return nil
 		},
 	}

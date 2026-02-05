@@ -52,6 +52,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /v1/jobs/{id}/logs", s.auth.Middleware(http.HandlerFunc(s.handleJobLogs)))
 	mux.Handle("GET /v1/jobs/{id}/events", s.auth.Middleware(http.HandlerFunc(s.handleJobEvents)))
 	mux.Handle("POST /v1/jobs/{id}/cancel", s.auth.Middleware(http.HandlerFunc(s.handleJobCancel)))
+	mux.Handle("GET /v1/whoami", s.auth.Middleware(http.HandlerFunc(s.handleWhoami)))
 
 	return mux
 }
@@ -645,7 +646,28 @@ func (s *Server) handleJobLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stream from agent to client
-	_, _ = io.Copy(w, resp.Body)
+	if follow == "true" {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			// Fallback if flusher not supported
+			_, _ = io.Copy(w, resp.Body)
+			return
+		}
+
+		buf := make([]byte, 4096)
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				_, _ = w.Write(buf[:n])
+				flusher.Flush()
+			}
+			if err != nil {
+				break
+			}
+		}
+	} else {
+		_, _ = io.Copy(w, resp.Body)
+	}
 }
 
 func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
@@ -781,4 +803,15 @@ func (s *Server) markJobCanceled(jobID string) {
 	if err := tx.Commit(); err != nil {
 		log.Printf("Error committing cancel for %s: %v", jobID, err)
 	}
+}
+
+func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(user)
 }
