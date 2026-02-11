@@ -434,15 +434,21 @@ func (s *Server) handleJobSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate GPU count against the largest node in the cluster
+	var maxGPUs int
+	if err := s.db.QueryRow("SELECT COUNT(*) as c FROM gpus GROUP BY node_id ORDER BY c DESC LIMIT 1").Scan(&maxGPUs); err == nil && maxGPUs > 0 && req.GPUCount > maxGPUs {
+		http.Error(w, fmt.Sprintf("invalid request: job requests %d GPUs but largest node only has %d", req.GPUCount, maxGPUs), http.StatusBadRequest)
+		return
+	}
+
 	envJSON, _ := json.Marshal(req.Env)
 	jobID := uuid.New().String()
 	nowStr := formatTime(time.Now())
 
-	_, err := s.db.Exec(`
+	if _, err := s.db.Exec(`
 		INSERT INTO jobs (id, owner_id, state, priority, gpu_count, command, cwd, env_json, max_runtime_minutes, created_at, queued_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, jobID, user.ID, models.JobStateQueued, req.Priority, req.GPUCount, req.Command, req.CWD, string(envJSON), req.MaxRuntimeMinutes, nowStr, nowStr)
-	if err != nil {
+	`, jobID, user.ID, models.JobStateQueued, req.Priority, req.GPUCount, req.Command, req.CWD, string(envJSON), req.MaxRuntimeMinutes, nowStr, nowStr); err != nil {
 		http.Error(w, "db error job insert", http.StatusInternalServerError)
 		return
 	}

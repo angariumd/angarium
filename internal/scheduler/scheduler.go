@@ -119,7 +119,14 @@ func (s *Scheduler) tryScheduleJob(job models.Job) error {
 		return s.updateJobReason(job.ID, fmt.Sprintf("insufficient cluster capacity: %d/%d", stats.totalHealthyGPUs, job.GPUCount))
 	}
 	if stats.maxHealthySingleNode < job.GPUCount {
-		return s.updateJobReason(job.ID, fmt.Sprintf("no node can fit %d GPUs (max %d)", job.GPUCount, stats.maxHealthySingleNode))
+		// fail the job if it's larger than any node in the cluster
+		var maxRegistered int
+		err := s.db.QueryRow("SELECT COUNT(*) as c FROM gpus GROUP BY node_id ORDER BY c DESC LIMIT 1").Scan(&maxRegistered)
+		if err == nil && maxRegistered > 0 && job.GPUCount > maxRegistered {
+			return s.failJob(job.ID, fmt.Sprintf("unschedulable: requested %d GPUs but largest node has %d", job.GPUCount, maxRegistered))
+		}
+
+		return s.updateJobReason(job.ID, fmt.Sprintf("no node currently has %d healthy GPUs (max %d)", job.GPUCount, stats.maxHealthySingleNode))
 	}
 
 	var bestNode *nodeCapacity
@@ -302,6 +309,19 @@ func (s *Scheduler) notifyAgentLaunch(job models.Job, nodeID string, gpus []mode
 
 func (s *Scheduler) updateJobReason(jobID string, reason string) error {
 	_, err := s.db.Exec("UPDATE jobs SET reason = ? WHERE id = ?", reason, jobID)
+	return err
+}
+
+func (s *Scheduler) failJob(jobID string, reason string) error {
+	nowStr := formatTime(time.Now())
+	_, err := s.db.Exec(`
+		UPDATE jobs 
+		SET state = ?, finished_at = ?, reason = ? 
+		WHERE id = ?
+	`, models.JobStateFailed, nowStr, reason, jobID)
+	if err == nil {
+		s.events.Emit(events.TypeJobLost, &jobID, nil, map[string]string{"reason": reason})
+	}
 	return err
 }
 
