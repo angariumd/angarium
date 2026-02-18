@@ -38,7 +38,9 @@ func (d *DB) Init() error {
 		status TEXT NOT NULL,
 		last_heartbeat_at DATETIME NOT NULL,
 		agent_version TEXT NOT NULL,
-		addr TEXT
+		addr TEXT,
+		memory_total_mb INTEGER NOT NULL DEFAULT 0,
+		memory_used_mb INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE IF NOT EXISTS gpus (
@@ -49,6 +51,8 @@ func (d *DB) Init() error {
 		name TEXT NOT NULL,
 		memory_mb INTEGER NOT NULL,
 		health TEXT NOT NULL DEFAULT 'OK',
+		utilization INTEGER NOT NULL DEFAULT 0,
+		memory_used_mb INTEGER NOT NULL DEFAULT 0,
 		last_seen_at DATETIME NOT NULL,
 		FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
 	);

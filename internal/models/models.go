@@ -12,6 +12,9 @@ type Node struct {
 	Addr            string    `json:"addr"`
 	GPUCount        int       `json:"gpu_count"`
 	GPUFree         int       `json:"gpu_free"`
+	GPUUtilization  int       `json:"gpu_utilization"` // Average across all GPUs
+	MemoryTotalMB   int       `json:"memory_total_mb"`
+	MemoryUsedMB    int       `json:"memory_used_mb"`
 }
 
 type GPU struct {
