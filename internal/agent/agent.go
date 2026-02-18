@@ -241,11 +241,13 @@ func (a *Agent) StartHeartbeat(interval time.Duration) {
 }
 
 type HeartbeatRequest struct {
-	NodeID       string       `json:"node_id"`
-	AgentVersion string       `json:"agent_version"`
-	Addr         string       `json:"addr"`
-	GPUs         []models.GPU `json:"gpus"`
-	ActiveJobIDs []string     `json:"active_job_ids"`
+	NodeID        string       `json:"node_id"`
+	AgentVersion  string       `json:"agent_version"`
+	Addr          string       `json:"addr"`
+	GPUs          []models.GPU `json:"gpus"`
+	ActiveJobIDs  []string     `json:"active_job_ids"`
+	MemoryTotalMB int          `json:"memory_total_mb"`
+	MemoryUsedMB  int          `json:"memory_used_mb"`
 }
 
 func (a *Agent) sendHeartbeat() {
@@ -262,12 +264,16 @@ func (a *Agent) sendHeartbeat() {
 	}
 	a.mu.Unlock()
 
+	sysMetrics := GetSystemMetrics()
+
 	req := HeartbeatRequest{
-		NodeID:       a.nodeID,
-		AgentVersion: a.version,
-		Addr:         a.addr,
-		GPUs:         gpus,
-		ActiveJobIDs: activeIDs,
+		NodeID:        a.nodeID,
+		AgentVersion:  a.version,
+		Addr:          a.addr,
+		GPUs:          gpus,
+		ActiveJobIDs:  activeIDs,
+		MemoryTotalMB: sysMetrics.TotalMB,
+		MemoryUsedMB:  sysMetrics.UsedMB,
 	}
 
 	body, _ := json.Marshal(req)

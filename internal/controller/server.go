@@ -54,7 +54,23 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /v1/jobs/{id}/cancel", s.auth.Middleware(http.HandlerFunc(s.handleJobCancel)))
 	mux.Handle("GET /v1/whoami", s.auth.Middleware(http.HandlerFunc(s.handleWhoami)))
 
-	return mux
+	return s.withCORS(mux)
+}
+
+func (s *Server) withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Agent-Token")
+
+		if r.Method == "OPTIONS" {
+			log.Printf("CORS: Handling preflight for %s", r.URL.Path)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) StartStaleNodeDetector(interval time.Duration) {
@@ -289,11 +305,13 @@ func (s *Server) killZombie(addr, jobID string) {
 }
 
 type HeartbeatRequest struct {
-	NodeID       string       `json:"node_id"`
-	AgentVersion string       `json:"agent_version"`
-	Addr         string       `json:"addr"`
-	GPUs         []models.GPU `json:"gpus"`
-	ActiveJobIDs []string     `json:"active_job_ids"`
+	NodeID        string       `json:"node_id"`
+	AgentVersion  string       `json:"agent_version"`
+	Addr          string       `json:"addr"`
+	GPUs          []models.GPU `json:"gpus"`
+	ActiveJobIDs  []string     `json:"active_job_ids"`
+	MemoryTotalMB int          `json:"memory_total_mb"`
+	MemoryUsedMB  int          `json:"memory_used_mb"`
 }
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -318,14 +336,16 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	// Update node
 	_, err = tx.Exec(`
-		INSERT INTO nodes (id, status, last_heartbeat_at, agent_version, addr)
-		VALUES (?, 'UP', ?, ?, ?)
+		INSERT INTO nodes (id, status, last_heartbeat_at, agent_version, addr, memory_total_mb, memory_used_mb)
+		VALUES (?, 'UP', ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			status = 'UP',
 			last_heartbeat_at = excluded.last_heartbeat_at,
 			agent_version = excluded.agent_version,
-			addr = excluded.addr
-	`, req.NodeID, nowStr, req.AgentVersion, req.Addr)
+			addr = excluded.addr,
+			memory_total_mb = excluded.memory_total_mb,
+			memory_used_mb = excluded.memory_used_mb
+	`, req.NodeID, nowStr, req.AgentVersion, req.Addr, req.MemoryTotalMB, req.MemoryUsedMB)
 	if err != nil {
 		log.Printf("heartbeat failed for node %s: %v", req.NodeID, err)
 		http.Error(w, "db error node update", http.StatusInternalServerError)
@@ -341,16 +361,18 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	// Update GPUs
 	for _, gpu := range req.GPUs {
 		_, err := tx.Exec(`
-			INSERT INTO gpus (id, node_id, idx, uuid, name, memory_mb, health, last_seen_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO gpus (id, node_id, idx, uuid, name, memory_mb, health, utilization, memory_used_mb, last_seen_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				idx = excluded.idx,
 				uuid = excluded.uuid,
 				name = excluded.name,
 				memory_mb = excluded.memory_mb,
 				health = excluded.health,
+				utilization = excluded.utilization,
+				memory_used_mb = excluded.memory_used_mb,
 				last_seen_at = excluded.last_seen_at
-		`, fmt.Sprintf("%s-%s", req.NodeID, gpu.UUID), req.NodeID, gpu.Idx, gpu.UUID, gpu.Name, gpu.MemoryMB, gpu.Health, nowStr)
+		`, fmt.Sprintf("%s-%s", req.NodeID, gpu.UUID), req.NodeID, gpu.Idx, gpu.UUID, gpu.Name, gpu.MemoryMB, gpu.Health, gpu.Utilization, gpu.MemoryUsedMB, nowStr)
 		if err != nil {
 			log.Printf("Heartbeat: error updating GPU %s for node %s: %v", gpu.UUID, req.NodeID, err)
 			http.Error(w, "db error gpu update", http.StatusInternalServerError)
@@ -475,7 +497,7 @@ func (s *Server) handleJobList(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var jobs []models.Job
+	var jobs = []models.Job{}
 	for rows.Next() {
 		var j models.Job
 		if err := rows.Scan(&j.ID, &j.OwnerID, &j.State, &j.Priority, &j.GPUCount, &j.Command, &j.CWD, &j.CreatedAt, &j.StartedAt, &j.FinishedAt, &j.ExitCode, &j.Reason); err != nil {
@@ -494,7 +516,9 @@ func (s *Server) handleNodeList(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(`
 		SELECT n.id, n.status, n.last_heartbeat_at, n.agent_version, n.addr,
 		(SELECT COUNT(*) FROM gpus g WHERE g.node_id = n.id AND g.health = 'OK') as gpu_count,
-		(SELECT COUNT(*) FROM gpus g WHERE g.node_id = n.id AND g.health = 'OK' AND g.id NOT IN (SELECT gpu_id FROM gpu_leases l WHERE l.expires_at > ?)) as gpu_free
+		(SELECT COUNT(*) FROM gpus g WHERE g.node_id = n.id AND g.health = 'OK' AND g.id NOT IN (SELECT gpu_id FROM gpu_leases l WHERE l.expires_at > ?)) as gpu_free,
+		COALESCE((SELECT CAST(AVG(utilization) AS INTEGER) FROM gpus g WHERE g.node_id = n.id AND g.health = 'OK'), 0) as gpu_utilization,
+		n.memory_total_mb, n.memory_used_mb
 		FROM nodes n
 	`, nowStr)
 	if err != nil {
@@ -504,10 +528,10 @@ func (s *Server) handleNodeList(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var nodes []models.Node
+	var nodes = []models.Node{}
 	for rows.Next() {
 		var n models.Node
-		if err := rows.Scan(&n.ID, &n.Status, &n.LastHeartbeatAt, &n.AgentVersion, &n.Addr, &n.GPUCount, &n.GPUFree); err != nil {
+		if err := rows.Scan(&n.ID, &n.Status, &n.LastHeartbeatAt, &n.AgentVersion, &n.Addr, &n.GPUCount, &n.GPUFree, &n.GPUUtilization, &n.MemoryTotalMB, &n.MemoryUsedMB); err != nil {
 			http.Error(w, "db error scan", http.StatusInternalServerError)
 			return
 		}

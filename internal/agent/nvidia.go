@@ -14,7 +14,7 @@ import (
 type NvidiaGPUProvider struct{}
 
 func (p *NvidiaGPUProvider) GetGPUs() ([]models.GPU, error) {
-	cmd := exec.Command("nvidia-smi", "--query-gpu=index,gpu_uuid,name,memory.total", "--format=csv,noheader,nounits")
+	cmd := exec.Command("nvidia-smi", "--query-gpu=index,gpu_uuid,name,memory.total,utilization.gpu,memory.used", "--format=csv,noheader,nounits")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("calling nvidia-smi: %w", err)
@@ -31,7 +31,7 @@ func (p *NvidiaGPUProvider) GetGPUs() ([]models.GPU, error) {
 	now := time.Now()
 
 	for _, record := range records {
-		if len(record) < 4 {
+		if len(record) < 6 {
 			continue
 		}
 
@@ -40,15 +40,19 @@ func (p *NvidiaGPUProvider) GetGPUs() ([]models.GPU, error) {
 
 		name := record[2]
 		memTotal, _ := strconv.Atoi(record[3])
+		util, _ := strconv.Atoi(record[4])
+		memUsed, _ := strconv.Atoi(record[5])
 
 		gpus = append(gpus, models.GPU{
-			ID:         "", // Will be populated by controller or derived
-			Idx:        idx,
-			UUID:       uuid,
-			Name:       name,
-			MemoryMB:   memTotal,
-			Health:     "OK", // Simple for MVP
-			LastSeenAt: now,
+			ID:           "", // Will be populated by controller or derived
+			Idx:          idx,
+			UUID:         uuid,
+			Name:         name,
+			MemoryMB:     memTotal,
+			Health:       "OK", // Simple for MVP
+			Utilization:  util,
+			MemoryUsedMB: memUsed,
+			LastSeenAt:   now,
 		})
 	}
 
