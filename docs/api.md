@@ -1,6 +1,6 @@
 # API Specification
 
-All endpoints are prefixed with `/v1`. Authentication is required for all non-internal routes via a Bearer token.
+All endpoints are prefixed with `/v1`. Authentication is required for all non-internal routes via a Bearer token. Internal agent routes require `X-Agent-Token`.
 
 ## Controller APIs
 
@@ -19,9 +19,14 @@ All endpoints are prefixed with `/v1`. Authentication is required for all non-in
         "idx": 0,
         "name": "NVIDIA A100",
         "memory_mb": 40960,
-        "health": "OK"
+        "health": "OK",
+        "utilization": 0,
+        "memory_used_mb": 0
       }
-    ]
+    ],
+    "active_job_ids": ["uuid-1", "uuid-2"],
+    "memory_total_mb": 128000,
+    "memory_used_mb": 4096
   }
   ```
 
@@ -45,22 +50,28 @@ All endpoints are prefixed with `/v1`. Authentication is required for all non-in
     "priority": 10,
     "command": "python train.py",
     "cwd": "/shared/project",
-    "env": {"CUDA_LAUNCH_BLOCKING": "1"}
+    "env": {"CUDA_LAUNCH_BLOCKING": "1"},
+    "max_runtime_minutes": 60
   }
   ```
 - **Response**: `{"id": "uuid"}`
 
 ### Job Management
-- **GET** `/v1/jobs`: List all jobs.
+- **GET** `/v1/jobs`: List all jobs. Returns an array of Job objects.
 - **GET** `/v1/jobs/{id}/logs`: Stream logs from the assigned Agent. Supports `?follow=true`.
+- **GET** `/v1/jobs/{id}/events`: List events for a specific job (submission, allocation, state changes).
 - **POST** `/v1/jobs/{id}/cancel`: Signal cancellation to the assigned Agent.
 
 ### Cluster Status
 - **GET** `/v1/nodes`: List nodes and GPU availability.
+- **Response**: Array of Node objects containing GPU counts, health, and memory metrics.
+
+### Identity
+- **GET** `/v1/whoami`: Returns the current authenticated user's identity.
 
 ## Agent APIs (Internal)
 
-These are called by the Controller.
+These are called by the Controller or proxied through it. All require `X-Agent-Token`.
 
 ### Job Launch
 - **POST** `/v1/agent/launch`
@@ -77,4 +88,10 @@ These are called by the Controller.
 - **Payload**: `{"job_id": "uuid"}`
 
 ### Running Jobs
-- **GET** `/v1/agent/running`: Returns list of active PIDs for reconciliation.
+- **GET** `/v1/agent/running`
+- **Response**: `[{"job_id": "uuid", "pid": 1234}]` (Used for reconciliation).
+
+### Agent Logs
+- **GET** `/v1/agent/jobs/{id}/logs`
+- **Query**: `?follow=true` for streaming.
+- **Response**: Plain text log stream.
