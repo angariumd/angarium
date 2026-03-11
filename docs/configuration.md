@@ -1,46 +1,49 @@
 # Configuration Guide
 
-Angarium is designed to be "zero-config" for local testing, but here is how you set up a real cluster.
+Angarium configuration files are located in `/etc/angarium/` when installed via the official script.
 
 ## Controller Configuration
 
-The `controller.yaml`. This is where the state lives.
+The controller configuration is located at `/etc/angarium/controller.yaml`.
 
 ```yaml
-# config/controller.yaml
-addr: "localhost:8080" # Where the controller listens for API requests
-db_path: "/var/lib/angarium/angarium.db" # Path to the SQLite database
-# Secret token for agents to join
-shared_token: "your-very-secure-agent-secret" # Must match agent's shared_token
-# Secret token for users (CLI)
+# /etc/angarium/controller.yaml
+addr: ":8080" # Listen on all interfaces
+db_path: "/var/lib/angarium/angarium.db" # Persistent state location
+shared_token: "your-agent-secret" # Must match agent's shared_token
+
+# User access tokens for the CLI
 users:
-  - id: "user-1" # Unique identifier for this user
-    name: "User 1" # Display name for this user
-    token: "user-access-token" # Used by CLI to authenticate
+  - id: "admin"
+    name: "Administrator"
+    token: "admin-secret-token"
 ```
 
 ## Agent Configuration
 
-Each GPU node runs an agent.
+The agent configuration is located at `/etc/angarium/agent.yaml`.
 
 ```yaml
-# config/agent.yaml
-controller_url: "http://controller-ip:8080" # URL of the controller
-shared_token: "your-very-secure-agent-secret" # Must match controller's shared_token
-node_id: "node-1" # Unique identifier for this node
-addr: "localhost:8081" # Agent listens on this port for controller
+# /etc/angarium/agent.yaml
+controller_url: "http://controller-ip:8080"
+shared_token: "your-agent-secret" # Must match controller
+node_id: "" # Optional: defaults to hostname
+addr: "http://localhost:8081" # Internal agent API
 ```
 
 ## CLI Configuration
 
-The CLI looks for a config in `~/.config/angarium/config.yaml`.
+The CLI looks for configuration in `~/.config/angarium/config.yaml`.
 
 ```yaml
-controller_url: "http://controller-ip:8080" # URL of the controller
-token: "user-access-token" # Must match controller's users token
+# ~/.config/angarium/config.yaml
+controller_url: "http://controller-ip:8080"
+token: "admin-secret-token" # Match one of the tokens in controller's users list
 ```
 
+---
+
 > [!TIP]
-> You can also use environment variables:
-> `export ANGARIUM_CONTROLLER=http://...`
-> `export ANGARIUM_TOKEN=...`
+> **Environment Variables**: You can override config settings using environment variables:
+> - `ANGARIUM_CONTROLLER_URL` (for Agent/CLI)
+> - `ANGARIUM_TOKEN` (for CLI)
