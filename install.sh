@@ -113,8 +113,13 @@ run_as_root chown -R angarium:angarium /var/lib/angarium /var/log/angarium 2>/de
 
 # Create config file if not exists
 if [[ ! -f "/etc/angarium/$MODE.yaml" ]]; then
-    if [ -f "deploy/samples/$MODE.yaml" ]; then
-         run_as_root cp "deploy/samples/$MODE.yaml" "/etc/angarium/$MODE.yaml"
+    SAMPLE_CONFIG="deploy/samples/$MODE.yaml"
+    if [ ! -f "$SAMPLE_CONFIG" ] && [ -f "bin/$SAMPLE_CONFIG" ]; then
+        SAMPLE_CONFIG="bin/$SAMPLE_CONFIG"
+    fi
+
+    if [ -f "$SAMPLE_CONFIG" ]; then
+         run_as_root cp "$SAMPLE_CONFIG" "/etc/angarium/$MODE.yaml"
     else
          echo "Generating minimal fallback config for $MODE..."
          if [[ "$MODE" == "controller" ]]; then
@@ -127,10 +132,17 @@ if [[ ! -f "/etc/angarium/$MODE.yaml" ]]; then
 fi
 
 # Create systemd service if not exists
-if [ -f "deploy/systemd/angarium-$MODE.service" ]; then
-    run_as_root cp "deploy/systemd/angarium-$MODE.service" "/etc/systemd/system/"
+SERVICE_FILE="deploy/systemd/angarium-$MODE.service"
+if [ ! -f "$SERVICE_FILE" ] && [ -f "bin/$SERVICE_FILE" ]; then
+    SERVICE_FILE="bin/$SERVICE_FILE"
+fi
+
+if [ -f "$SERVICE_FILE" ]; then
+    run_as_root cp "$SERVICE_FILE" "/etc/systemd/system/"
     run_as_root systemctl daemon-reload
     run_as_root systemctl enable "angarium-$MODE"
+else
+    echo "Warning: Systemd service file not found ($SERVICE_FILE). Skipping service installation."
 fi
 
 # Print summary
@@ -141,4 +153,8 @@ echo "Binary:        /usr/local/bin/angarium-$MODE"
 echo "Config:        /etc/angarium/$MODE.yaml"
 echo "Service:       angarium-$MODE"
 echo "--------------------------------------------------------"
-echo "Run 'sudo systemctl start angarium-$MODE' to start."
+if command -v systemctl &> /dev/null && [ -f "/etc/systemd/system/angarium-$MODE.service" ]; then
+    echo "Run 'sudo systemctl start angarium-$MODE' to start."
+else
+    echo "To start manually: sudo /usr/local/bin/angarium-$MODE"
+fi

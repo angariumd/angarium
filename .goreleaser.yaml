@@ -47,6 +47,7 @@ archives:
       - README.md
       - LICENSE
       - deploy/samples/*.yaml
+      - deploy/systemd/*.service
 
 nfpms:
   - id: angarium-packages

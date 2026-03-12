@@ -31,6 +31,12 @@ type AgentConfig struct {
 }
 
 func LoadControllerConfig(path string) (*ControllerConfig, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) && path == "config/controller.yaml" {
+		if _, err := os.Stat("/etc/angarium/controller.yaml"); err == nil {
+			path = "/etc/angarium/controller.yaml"
+		}
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -45,6 +51,12 @@ func LoadControllerConfig(path string) (*ControllerConfig, error) {
 }
 
 func LoadAgentConfig(path string) (*AgentConfig, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) && path == "config/agent.yaml" {
+		if _, err := os.Stat("/etc/angarium/agent.yaml"); err == nil {
+			path = "/etc/angarium/agent.yaml"
+		}
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
