@@ -1,0 +1,88 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: controller
+    main: ./cmd/controller
+    binary: angarium-controller
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+  - id: agent
+    main: ./cmd/agent
+    binary: angarium-agent
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+  - id: cli
+    main: ./cmd/cli
+    binary: angarium
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - name_template: "angarium_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    allow_different_binary_count: true 
+    files:
+      - README.md
+      - LICENSE
+      - deploy/samples/*.yaml
+
+nfpms:
+  - id: angarium-packages
+    package_name: angarium
+    vendor: Angarium
+    homepage: https://github.com/angariumd/angarium
+    maintainer: Sam <samfrmd@gmail.com>
+    description: Lightweight GPU job queue.
+    license: Apache 2.0
+    formats:
+      - deb
+      - rpm
+    ids:
+      - controller
+      - agent
+      - cli
+    bindir: /usr/local/bin
+    dependencies:
+      - libc6
+    contents:
+      - src: deploy/systemd/*.service
+        dst: /etc/systemd/system/
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  footer: |
+    Released by [GoReleaser](https://github.com/goreleaser/goreleaser).

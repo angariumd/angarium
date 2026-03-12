@@ -41,7 +41,7 @@ func NewServer(db *db.DB, auth *auth.Authenticator, events *events.EventManager,
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// Node management (shared token auth)
+	// Agent endpoints (shared token auth)
 	mux.Handle("POST /v1/agent/heartbeat", s.auth.AgentMiddleware(s.AgentToken, http.HandlerFunc(s.handleHeartbeat)))
 	mux.Handle("POST /v1/agent/jobs/{id}/state", s.auth.AgentMiddleware(s.AgentToken, http.HandlerFunc(s.handleJobStateUpdate)))
 	mux.Handle("GET /v1/nodes", s.auth.Middleware(http.HandlerFunc(s.handleNodeList)))
@@ -123,7 +123,7 @@ func (s *Server) handleNodeOffline(nodeID string) {
 	now := time.Now().UTC()
 	nowStr := formatTime(now)
 
-	// 1. Mark node as DOWN
+	// Mark node as DOWN
 	_, err = tx.Exec("UPDATE nodes SET status = 'DOWN' WHERE id = ?", nodeID)
 	if err != nil {
 		log.Printf("Error updating node %s status: %v", nodeID, err)
@@ -386,7 +386,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Active Job Reconciliation
-	// 1. Get expected jobs (RUNNING/STARTING) for this node from DB
+	// Get expected jobs (RUNNING/STARTING) for this node from DB
 	dbRows, err := s.db.Query(`
 		SELECT j.id FROM jobs j
 		JOIN allocations a ON a.job_id = j.id
@@ -562,7 +562,7 @@ func (s *Server) handleJobStateUpdate(w http.ResponseWriter, r *http.Request) {
 
 	nowStr := formatTime(time.Now())
 
-	// 1. Update Job
+	// Update Job
 	query := "UPDATE jobs SET state = ?"
 	args := []any{req.State}
 
@@ -583,7 +583,7 @@ func (s *Server) handleJobStateUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Clear leases if terminal
+	// Clear leases if terminal
 	if req.State == models.JobStateSucceeded || req.State == models.JobStateFailed || req.State == models.JobStateCanceled {
 		_, err = tx.Exec(`
 			DELETE FROM gpu_leases
