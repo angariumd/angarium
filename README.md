@@ -14,15 +14,25 @@ graph LR
 
 ## Quick Start
 
-### Build from source
+### Installation
 
-Requires Go and Make installed.
+Install the Angarium Agent or Controller on any Linux machine:
+
+```bash
+curl -sL https://raw.githubusercontent.com/angariumd/angarium/main/install.sh | sudo bash -s -- agent
+
+# for controller
+
+curl -sL https://raw.githubusercontent.com/angariumd/angarium/main/install.sh | sudo bash -s -- controller
+```
+
+### Build from source
 
 ```bash
 git clone https://github.com/angariumd/angarium.git
 cd angarium
 make build
-sudo cp bin/* /usr/local/bin/
+sudo ./install.sh
 ```
 
 ## Comparison: Zero Overhead
