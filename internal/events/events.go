@@ -14,6 +14,9 @@ const (
 	// Controller Events
 	TypeJobSubmitted = "JOB_SUBMITTED"
 	TypeJobCanceled  = "JOB_CANCELED"
+	TypeJobRunning   = "JOB_RUNNING"
+	TypeJobSucceeded = "JOB_SUCCEEDED"
+	TypeJobFailed    = "JOB_FAILED"
 
 	// Scheduler Events
 	TypeJobAllocated   = "JOB_ALLOCATED"

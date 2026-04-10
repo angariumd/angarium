@@ -2,3 +2,5 @@ controller_url: "http://localhost:8080"
 shared_token: "change-me-to-a-secure-agent-token"
 node_id: "" # Automatically uses hostname if empty
 addr: "http://localhost:8081"
+# log_dir: "/var/log/angarium/jobs"  # Job log storage; defaults to /var/log/angarium/jobs
+# no_verify_tls: false               # Set to true only for self-signed certs in dev/testing

@@ -17,6 +17,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config/agent.yaml", "path to agent config")
+	noVerifyTLS := flag.Bool("no-verify-tls", false, "skip TLS certificate verification (overrides config)")
 	mockFlag := flag.Bool("mock", false, "force mock GPU provider (for development only)")
 	flag.Parse()
 
@@ -25,8 +26,10 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	// Accept self-signed certs for internal communication
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	if *noVerifyTLS || cfg.NoVerifyTLS {
+		log.Println("WARNING: TLS certificate verification disabled. Do not use in production.")
+		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	}
 
 	nodeID, _ := os.Hostname()
 	if cfg.NodeID != "" {
@@ -52,7 +55,12 @@ func main() {
 		log.Printf("Successfully initialized real NvidiaGPUProvider")
 	}
 
-	a := agent.NewAgent(nodeID, cfg.ControllerURL, gpuProvider, "v0.1.0", cfg.Addr, cfg.SharedToken)
+	logDir := cfg.LogDir
+	if logDir == "" {
+		logDir = "/var/log/angarium/jobs"
+	}
+
+	a := agent.NewAgent(nodeID, cfg.ControllerURL, gpuProvider, "v0.1.0", cfg.Addr, cfg.SharedToken, logDir)
 
 	fmt.Printf("Angarium Agent starting (Node ID: %s, Addr: %s)...\n", nodeID, cfg.Addr)
 	a.StartHeartbeat(5 * time.Second)

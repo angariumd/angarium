@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/angariumd/angarium/internal/auth"
 	"github.com/angariumd/angarium/internal/db"
 	"github.com/angariumd/angarium/internal/events"
 	"github.com/angariumd/angarium/internal/models"
@@ -92,20 +93,54 @@ func TestBestFit(t *testing.T) {
 	})
 
 	t.Run("insufficient capacity", func(t *testing.T) {
-		// Request 2 GPUs when only 1 available
+		// Clean start
+		database.Exec("DELETE FROM gpu_leases")
+		database.Exec("DELETE FROM allocations")
+		database.Exec("DELETE FROM gpus")
+		database.Exec("DELETE FROM nodes")
+		database.Exec("DELETE FROM jobs")
+
+		seedNode(t, database, "node-A", 2)
+		seedNode(t, database, "node-B", 4)
+
+		// Job 1: 2 GPUs -> node-A (2/2)
+		job1ID := seedJob(t, database, "user-1", 2)
+		s.Schedule()
+		checkJobState(t, database, job1ID, models.JobStateAllocated, "node-A")
+
+		// Job 2: 3 GPUs -> node-B (3/4)
+		job2ID := seedJob(t, database, "user-1", 3)
+		s.Schedule()
+		checkJobState(t, database, job2ID, models.JobStateAllocated, "node-B")
+
+		// Available: 1 GPU on node-B. Total Busy: 5.
+		// Job 3 (2 GPUs) -> Should wait
 		job3ID := seedJob(t, database, "user-1", 2)
 		s.Schedule()
 		checkJobQueuedWithReason(t, database, job3ID, "waiting for GPUs (5 busy)")
 
-		// Request exceeds cluster capacity
-		job5ID := seedJob(t, database, "user-1", 10)
+		// Request more than cluster total
+		job4ID := seedJob(t, database, "user-1", 10)
 		s.Schedule()
-		checkJobQueuedWithReason(t, database, job5ID, "insufficient cluster capacity: 6/10")
+		checkJobQueuedWithReason(t, database, job4ID, "insufficient cluster capacity: 6/10")
 
-		// Request exceeds largest node
-		job6ID := seedJob(t, database, "user-1", 5)
+		// Request more than largest node EVER registered
+		job5ID := seedJob(t, database, "user-1", 5)
 		s.Schedule()
-		checkJobQueuedWithReason(t, database, job6ID, "no node can fit 5 GPUs (max 4)")
+		checkJobFailedWithReason(t, database, job5ID, "unschedulable: requested 5 GPUs but largest node has 4")
+
+		// Request fits in a registered node, but no UP node is big enough
+		// Add another small node so total capacity is enough, but max healthy node is still 2
+		seedNode(t, database, "node-C", 2)
+		// Mark node-B (4 GPUs) OFFLINE
+		database.Exec("UPDATE nodes SET status = 'OFFLINE' WHERE id = 'node-B'")
+
+		// Healthy nodes: node-A(2), node-C(2). Total Healthy = 4. Max Healthy = 2.
+		// Max Registered = 4 (from node-B).
+		// Job 6 (3 GPUs) -> Should be queued with "no node healthy"
+		job6ID := seedJob(t, database, "user-1", 3)
+		s.Schedule()
+		checkJobQueuedWithReason(t, database, job6ID, "no node currently has 3 healthy GPUs (max 2)")
 	})
 
 	t.Run("fragmentation", func(t *testing.T) {
@@ -203,11 +238,29 @@ func checkJobQueuedWithReason(t *testing.T, d *db.DB, jobID string, expectedReas
 	}
 }
 
+func checkJobFailedWithReason(t *testing.T, d *db.DB, jobID string, expectedReason string) {
+	var state models.JobState
+	var reason *string
+	err := d.QueryRow("SELECT state, reason FROM jobs WHERE id = ?", jobID).Scan(&state, &reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != models.JobStateFailed {
+		t.Errorf("Expected state FAILED, got %s", state)
+	}
+	if reason == nil {
+		t.Fatalf("Expected reason, got nil")
+	}
+	if *reason != expectedReason {
+		t.Errorf("Expected reason '%s', got '%s'", expectedReason, *reason)
+	}
+}
+
 func seedUser(t *testing.T, d *db.DB, id, name, token string) {
 	_, err := d.Exec(`
 		INSERT INTO users (id, name, token_hash)
 		VALUES (?, ?, ?)
-	`, id, name, token)
+	`, id, name, auth.HashToken(token))
 	if err != nil {
 		t.Fatal(err)
 	}

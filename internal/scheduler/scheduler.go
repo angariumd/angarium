@@ -12,14 +12,10 @@ import (
 	"github.com/angariumd/angarium/internal/db"
 	"github.com/angariumd/angarium/internal/events"
 	"github.com/angariumd/angarium/internal/models"
+	"github.com/angariumd/angarium/internal/timeutil"
 	"github.com/google/uuid"
 )
 
-const SQLTimeLayout = "2006-01-02 15:04:05"
-
-func formatTime(t time.Time) string {
-	return t.UTC().Format(SQLTimeLayout)
-}
 
 const DefaultLeaseDuration = 1 * time.Minute
 
@@ -178,7 +174,7 @@ func (s *Scheduler) getClusterStats() (*clusterStats, error) {
 			       (SELECT COUNT(*) FROM gpu_leases l WHERE l.gpu_id = g.id AND l.expires_at > ?) as is_leased
 			FROM gpus g
 			WHERE g.node_id = ? AND g.health = 'OK'
-		`, formatTime(now), nodeID)
+		`, timeutil.Format(now), nodeID)
 		if err != nil {
 			return nil, err
 		}
@@ -221,8 +217,8 @@ func (s *Scheduler) allocateJob(job models.Job, nodeID string, gpus []models.GPU
 	allocationID := uuid.New().String()
 	now := time.Now().UTC()
 	expiresAt := now.Add(DefaultLeaseDuration) // Initial lease for starting
-	nowStr := formatTime(now)
-	expiresAtStr := formatTime(expiresAt)
+	nowStr := timeutil.Format(now)
+	expiresAtStr := timeutil.Format(expiresAt)
 
 	_, err = tx.Exec("UPDATE jobs SET state = ?, reason = NULL WHERE id = ?", models.JobStateAllocated, job.ID)
 	if err != nil {
@@ -313,7 +309,7 @@ func (s *Scheduler) updateJobReason(jobID string, reason string) error {
 }
 
 func (s *Scheduler) failJob(jobID string, reason string) error {
-	nowStr := formatTime(time.Now())
+	nowStr := timeutil.Format(time.Now())
 	_, err := s.db.Exec(`
 		UPDATE jobs 
 		SET state = ?, finished_at = ?, reason = ? 
@@ -336,7 +332,7 @@ func (s *Scheduler) CleanupLeases() {
 }
 
 func (s *Scheduler) handleStalledJobs() error {
-	nowStr := formatTime(time.Now())
+	nowStr := timeutil.Format(time.Now())
 
 	// Jobs are "stuck" if their lease expired but they're still in starting/allocated state
 	rows, err := s.db.Query(`
@@ -399,12 +395,12 @@ func (s *Scheduler) handleStalledJobs() error {
 }
 
 func (s *Scheduler) pruneExpiredLeases() error {
-	_, err := s.db.Exec("DELETE FROM gpu_leases WHERE expires_at < ?", formatTime(time.Now()))
+	_, err := s.db.Exec("DELETE FROM gpu_leases WHERE expires_at < ?", timeutil.Format(time.Now()))
 	return err
 }
 
 func (s *Scheduler) EnforceMaxRuntime() {
-	nowStr := formatTime(time.Now())
+	nowStr := timeutil.Format(time.Now())
 	rows, err := s.db.Query(`
 		SELECT id FROM jobs 
 		WHERE state IN (?, ?) 

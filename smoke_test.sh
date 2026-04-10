@@ -8,6 +8,7 @@ function cleanup {
     pkill -f angarium-controller || true
     pkill -f angarium-agent || true
     rm -f angarium.db* logs/*.log logs/*.yaml logs/agent_state.json
+    rm -rf logs/jobs
 }
 trap cleanup EXIT
 
@@ -21,6 +22,7 @@ cat > logs/controller.yaml <<EOF
 addr: "localhost:8090"
 db_path: "angarium.db"
 shared_token: "agent-secret-token"
+no_verify_tls: true
 users:
   - id: "user-1"
     name: "Sam"
@@ -32,6 +34,8 @@ controller_url: "http://localhost:8090"
 shared_token: "agent-secret-token"
 node_id: "node-local"
 addr: "http://localhost:8091"
+log_dir: "logs/jobs"
+no_verify_tls: true
 EOF
 
 echo "Starting services..."

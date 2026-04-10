@@ -40,7 +40,10 @@ func main() {
 		token = cfg.Token
 	}
 	if token == "" {
-		token = "sam-secret-token" // Default developer token
+		fmt.Fprintln(os.Stderr, "Error: no API token configured.")
+		fmt.Fprintln(os.Stderr, "  Run: angarium login")
+		fmt.Fprintln(os.Stderr, "  Or set: ANGARIUM_TOKEN=<your-token>")
+		os.Exit(1)
 	}
 
 	rootCmd := &cobra.Command{Use: "angarium"}
@@ -433,12 +436,6 @@ func cancelJob(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 func request(method, path string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(method, controllerURL+path, body)
