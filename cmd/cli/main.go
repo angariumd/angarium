@@ -436,7 +436,6 @@ func cancelJob(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-
 func request(method, path string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(method, controllerURL+path, body)
 	if err != nil {

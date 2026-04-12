@@ -16,7 +16,6 @@ import (
 	"github.com/google/uuid"
 )
 
-
 const DefaultLeaseDuration = 1 * time.Minute
 
 type Scheduler struct {

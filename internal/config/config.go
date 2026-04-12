@@ -29,7 +29,7 @@ type AgentConfig struct {
 	Addr          string `yaml:"addr"`
 	CertPath      string `yaml:"cert_path"`
 	KeyPath       string `yaml:"key_path"`
-	LogDir        string `yaml:"log_dir"`    // Directory for job logs; defaults to /var/log/angarium/jobs
+	LogDir        string `yaml:"log_dir"`       // Directory for job logs; defaults to /var/log/angarium/jobs
 	NoVerifyTLS   bool   `yaml:"no_verify_tls"` // Skip TLS cert verification for controller calls (dev only)
 }
 
