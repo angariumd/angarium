@@ -19,6 +19,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config/controller.yaml", "path to controller config")
+	noVerifyTLS := flag.Bool("no-verify-tls", false, "skip TLS certificate verification for agent calls (overrides config)")
 	flag.Parse()
 
 	cfg, err := config.LoadControllerConfig(*configPath)
@@ -26,7 +27,10 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	if *noVerifyTLS || cfg.NoVerifyTLS {
+		log.Println("WARNING: TLS certificate verification disabled. Do not use in production.")
+		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	}
 
 	database, err := db.Open(cfg.DBPath)
 	if err != nil {
@@ -39,7 +43,8 @@ func main() {
 	}
 
 	for _, u := range cfg.Users {
-		_, err := database.Exec("INSERT OR REPLACE INTO users (id, name, token_hash) VALUES (?, ?, ?)", u.ID, u.Name, u.Token)
+		tokenHash := auth.HashToken(u.Token)
+		_, err := database.Exec("INSERT OR REPLACE INTO users (id, name, token_hash) VALUES (?, ?, ?)", u.ID, u.Name, tokenHash)
 		if err != nil {
 			log.Fatalf("failed to seed user %s: %v", u.Name, err)
 		}

@@ -36,7 +36,7 @@ func TestJobLifecycle(t *testing.T) {
 	server := NewServer(database, auth.NewAuthenticator(database), eventMgr, "test-token")
 
 	// Setup basic infrastructure (user + 1 node with 1 GPU)
-	database.Exec("INSERT INTO users (id, name, token_hash) VALUES ('user-1', 'User 1', 'token-1')")
+	database.Exec("INSERT INTO users (id, name, token_hash) VALUES ('user-1', 'User 1', ?)", auth.HashToken("token-1"))
 	database.Exec("INSERT INTO nodes (id, status, last_heartbeat_at, addr, agent_version) VALUES ('node-1', 'UP', datetime('now'), 'http://localhost:8081', 'v0.1.0')")
 	database.Exec("INSERT INTO gpus (id, node_id, idx, uuid, name, memory_mb, health, last_seen_at) VALUES ('gpu-1', 'node-1', 0, 'gpu-uuid-1', 'RTX 3090', 24576, 'OK', datetime('now'))")
 
@@ -158,7 +158,7 @@ func TestJobCancel(t *testing.T) {
 
 	server := NewServer(database, auth.NewAuthenticator(database), eventMgr, "test-token")
 
-	database.Exec("INSERT INTO users (id, name, token_hash) VALUES ('user-1', 'User 1', 'token-1')")
+	database.Exec("INSERT INTO users (id, name, token_hash) VALUES ('user-1', 'User 1', ?)", auth.HashToken("token-1"))
 
 	t.Run("cancel queued", func(t *testing.T) {
 		jobID := "queued-job"

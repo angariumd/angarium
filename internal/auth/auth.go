@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -10,9 +12,12 @@ import (
 	"github.com/angariumd/angarium/internal/models"
 )
 
-type contextKey string
+const userKey string = "user"
 
-const userKey contextKey = "user"
+func HashToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("%x", sum)
+}
 
 type Authenticator struct {
 	db *db.DB
@@ -36,11 +41,12 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Verify token against user records
+		tokenHash := HashToken(token)
+
 		var user models.User
-		err := a.db.QueryRow("SELECT id, name FROM users WHERE token_hash = ?", token).Scan(&user.ID, &user.Name)
+		err := a.db.QueryRow("SELECT id, name FROM users WHERE token_hash = ?", tokenHash).Scan(&user.ID, &user.Name)
 		if err != nil {
-			log.Printf("Auth: invalid token %q for path %s: %v", token, r.URL.Path, err)
+			log.Printf("Auth: invalid token for path %s", r.URL.Path)
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}

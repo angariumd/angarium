@@ -13,14 +13,9 @@ import (
 	"github.com/angariumd/angarium/internal/db"
 	"github.com/angariumd/angarium/internal/events"
 	"github.com/angariumd/angarium/internal/models"
+	"github.com/angariumd/angarium/internal/timeutil"
 	"github.com/google/uuid"
 )
-
-const SQLTimeLayout = "2006-01-02 15:04:05"
-
-func formatTime(t time.Time) string {
-	return t.UTC().Format(SQLTimeLayout)
-}
 
 type Server struct {
 	db         *db.DB
@@ -87,7 +82,7 @@ func (s *Server) detectStaleNodes() {
 	deadline := now.Add(-20 * time.Second)
 
 	// find stale nodes
-	rows, err := s.db.Query("SELECT id FROM nodes WHERE status = 'UP' AND last_heartbeat_at < ?", formatTime(deadline))
+	rows, err := s.db.Query("SELECT id FROM nodes WHERE status = 'UP' AND last_heartbeat_at < ?", timeutil.Format(deadline))
 	if err != nil {
 		log.Printf("failed to query stale nodes: %v", err)
 		return
@@ -121,7 +116,7 @@ func (s *Server) handleNodeOffline(nodeID string) {
 	defer tx.Rollback()
 
 	now := time.Now().UTC()
-	nowStr := formatTime(now)
+	nowStr := timeutil.Format(now)
 
 	// Mark node as DOWN
 	_, err = tx.Exec("UPDATE nodes SET status = 'DOWN' WHERE id = ?", nodeID)
@@ -273,7 +268,7 @@ func (s *Server) markJobLost(jobID string, reason string) {
 	defer tx.Rollback()
 
 	now := time.Now().UTC()
-	nowStr := formatTime(now)
+	nowStr := timeutil.Format(now)
 	_, err = tx.Exec("UPDATE jobs SET state = ?, finished_at = ?, reason = ? WHERE id = ?", models.JobStateLost, nowStr, reason, jobID)
 	if err != nil {
 		log.Printf("Error updating job %s to LOST: %v", jobID, err)
@@ -321,7 +316,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nowStr := formatTime(time.Now())
+	nowStr := timeutil.Format(time.Now())
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -465,7 +460,7 @@ func (s *Server) handleJobSubmit(w http.ResponseWriter, r *http.Request) {
 
 	envJSON, _ := json.Marshal(req.Env)
 	jobID := uuid.New().String()
-	nowStr := formatTime(time.Now())
+	nowStr := timeutil.Format(time.Now())
 
 	if _, err := s.db.Exec(`
 		INSERT INTO jobs (id, owner_id, state, priority, gpu_count, command, cwd, env_json, max_runtime_minutes, created_at, queued_at)
@@ -512,7 +507,7 @@ func (s *Server) handleJobList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleNodeList(w http.ResponseWriter, r *http.Request) {
-	nowStr := formatTime(time.Now())
+	nowStr := timeutil.Format(time.Now())
 	rows, err := s.db.Query(`
 		SELECT n.id, n.status, n.last_heartbeat_at, n.agent_version, n.addr,
 		(SELECT COUNT(*) FROM gpus g WHERE g.node_id = n.id AND g.health = 'OK') as gpu_count,
@@ -560,7 +555,7 @@ func (s *Server) handleJobStateUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	nowStr := formatTime(time.Now())
+	nowStr := timeutil.Format(time.Now())
 
 	// Update Job
 	query := "UPDATE jobs SET state = ?"
@@ -606,7 +601,20 @@ func (s *Server) handleJobStateUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.events.Emit(events.TypeJobCanceled, &jobID, nil, map[string]string{"reason": "user_request"})
+	attrs := map[string]string{}
+	switch req.State {
+	case models.JobStateRunning:
+		s.events.Emit(events.TypeJobRunning, &jobID, nil, nil)
+	case models.JobStateSucceeded:
+		s.events.Emit(events.TypeJobSucceeded, &jobID, nil, nil)
+	case models.JobStateFailed:
+		if req.ExitCode != nil {
+			attrs["exit_code"] = fmt.Sprintf("%d", *req.ExitCode)
+		}
+		s.events.Emit(events.TypeJobFailed, &jobID, nil, attrs)
+	case models.JobStateCanceled:
+		s.events.Emit(events.TypeJobCanceled, &jobID, nil, map[string]string{"reason": "user_request"})
+	}
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -810,8 +818,8 @@ func (s *Server) markJobCanceled(jobID string) {
 	defer tx.Rollback()
 
 	now := time.Now().UTC()
-	nowStr := formatTime(now)
-	// Overwrite any non-terminal state
+	nowStr := timeutil.Format(now)
+
 	_, err = tx.Exec("UPDATE jobs SET state = ?, finished_at = ? WHERE id = ?", models.JobStateCanceled, nowStr, jobID)
 	if err != nil {
 		log.Printf("Error updating job %s to CANCELED: %v", jobID, err)

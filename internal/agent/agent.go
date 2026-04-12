@@ -28,14 +28,14 @@ type Agent struct {
 	activeJobs    map[string]*JobRunner
 }
 
-func NewAgent(nodeID, controllerURL string, gpuProvider GPUProvider, version, addr, sharedToken string) *Agent {
+func NewAgent(nodeID, controllerURL string, gpuProvider GPUProvider, version, addr, sharedToken, logDir string) *Agent {
 	a := &Agent{
 		nodeID:        nodeID,
 		controllerURL: controllerURL,
 		gpuProvider:   gpuProvider,
 		version:       version,
 		addr:          addr,
-		logDir:        "/tmp/angarium/jobs",
+		logDir:        logDir,
 		sharedToken:   sharedToken,
 		activeJobs:    make(map[string]*JobRunner),
 	}

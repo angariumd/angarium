@@ -5,3 +5,4 @@ users:
   - id: "admin"
     name: "Administrator"
     token: "admin-token-change-me"
+# no_verify_tls: false  # Set to true only for self-signed certs in dev/testing
