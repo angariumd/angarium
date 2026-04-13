@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2-alpha] - 2026-04-13
+
+### Added
+- `version` command to CLI for verifying the project version.
+- `--insecure` flag to CLI, Agent, and Controller to allow configurable TLS verification.
+- Revamped `README.md` with status badges, embedded demo, and "Join the Beta" section.
+
+### Fixed
+- Improved `smoke_test.sh` process isolation and permission handling for better reliability.
+- Fixed hardcoded TLS certificate verification bypass; now defaults to secure with an explicit opt-out.
+
 ## [0.1.1-alpha] - 2026-04-12
 
 ### Added

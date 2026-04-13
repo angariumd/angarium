@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -14,6 +13,7 @@ import (
 	"github.com/angariumd/angarium/internal/controller"
 	"github.com/angariumd/angarium/internal/db"
 	"github.com/angariumd/angarium/internal/events"
+	"github.com/angariumd/angarium/internal/netutils"
 	"github.com/angariumd/angarium/internal/scheduler"
 )
 
@@ -29,7 +29,7 @@ func main() {
 
 	if *noVerifyTLS || cfg.NoVerifyTLS {
 		log.Println("WARNING: TLS certificate verification disabled. Do not use in production.")
-		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+		http.DefaultClient = netutils.NewClient(true)
 	}
 
 	database, err := db.Open(cfg.DBPath)

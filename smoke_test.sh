@@ -2,11 +2,13 @@
 set -e
 
 export ANGARIUM_CONTROLLER="http://localhost:8090"
-export ANGARIUM_TOKEN="sam-secret-token"
+export ANGARIUM_TOKEN="YOUR_API_TOKEN"
 
 function cleanup {
-    pkill -f angarium-controller || true
-    pkill -f angarium-agent || true
+    if [ ! -z "$CTRL_PID" ]; then kill $CTRL_PID || true; fi
+    if [ ! -z "$AGENT_PID" ]; then kill $AGENT_PID || true; fi
+    pkill -u "$(whoami)" -f angarium-controller || true
+    pkill -u "$(whoami)" -f angarium-agent || true
     rm -f angarium.db* logs/*.log logs/*.yaml logs/agent_state.json
     rm -rf logs/jobs
 }
@@ -26,7 +28,7 @@ no_verify_tls: true
 users:
   - id: "user-1"
     name: "Sam"
-    token: "sam-secret-token"
+    token: "YOUR_API_TOKEN"
 EOF
 
 cat > logs/agent.yaml <<EOF
@@ -40,9 +42,11 @@ EOF
 
 echo "Starting services..."
 ./bin/angarium-controller --config logs/controller.yaml > logs/controller.log 2>&1 &
+CTRL_PID=$!
 sleep 2
 
 ./bin/angarium-agent --config logs/agent.yaml --mock > logs/agent.log 2>&1 &
+AGENT_PID=$!
 sleep 5 # wait for registration
 
 ./bin/angarium status
@@ -104,9 +108,11 @@ grep "zombie on node" logs/controller.log || exit 1
 echo "--- Agent Recovery ---"
 RECOVERY_ID=$(./bin/angarium submit --gpus 1 --cwd /tmp "sleep 30" | grep "ID:" | awk '{print $NF}')
 wait_for_state "$RECOVERY_ID" "RUNNING"
-pkill -f angarium-agent
+if [ ! -z "$AGENT_PID" ]; then kill $AGENT_PID || true; fi
+pkill -u "$(whoami)" -f angarium-agent || true
 sleep 2
 ./bin/angarium-agent --config logs/agent.yaml --mock > logs/agent.restart.log 2>&1 &
+AGENT_PID=$!
 sleep 5
 wait_for_state "$RECOVERY_ID" "RUNNING"
 

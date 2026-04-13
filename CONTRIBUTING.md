@@ -34,10 +34,10 @@ Angarium is written in Go. You'll need Go 1.24+ installed.
 - Write tests for new features.
 - Keep dependencies to a minimum. We prefer the standard library or small, single-purpose libraries.
 
-## Security
+## Join the Beta
 
-If you find a security vulnerability, please do NOT open an issue. Instead send an email to [samfrmd[at]gmail.com]
+Angarium is in Early Alpha. We are actively looking for researchers and AI labs with 5–100 GPUs to try it out. If you'd like to share your experience or suggest features, please open an issue or email us at [samfrmd[at]gmail.com].
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the project's license (MIT).
+By contributing, you agree that your contributions will be licensed under the project's license (Apache 2.0).

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,12 +14,16 @@ import (
 
 	"github.com/angariumd/angarium/internal/config"
 	"github.com/angariumd/angarium/internal/models"
+	"github.com/angariumd/angarium/internal/netutils"
 	"github.com/spf13/cobra"
 )
+
+const Version = "0.1.2-alpha"
 
 var (
 	controllerURL string
 	token         string
+	insecure      bool
 )
 
 func main() {
@@ -46,7 +49,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	rootCmd := &cobra.Command{Use: "angarium"}
+	rootCmd := &cobra.Command{
+		Use: "angarium",
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// Pre-validation or setup if needed
+		},
+	}
+	rootCmd.PersistentFlags().BoolVar(&insecure, "insecure", false, "skip TLS certificate verification")
+
+	versionCmd := &cobra.Command{
+		Use:   "version",
+		Short: "Print the version number of Angarium",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("Angarium CLI version %s\n", Version)
+		},
+	}
 
 	psCmd := &cobra.Command{
 		Use:   "ps",
@@ -206,7 +223,7 @@ func main() {
 		},
 	}
 
-	rootCmd.AddCommand(nodesCmd, queueCmd, submitCmd, statusCmd, inspectCmd, psCmd, logsCmd, cancelCmd, loginCmd, whoamiCmd)
+	rootCmd.AddCommand(nodesCmd, queueCmd, submitCmd, statusCmd, inspectCmd, psCmd, logsCmd, cancelCmd, loginCmd, whoamiCmd, versionCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -444,11 +461,7 @@ func request(method, path string, body io.Reader) (*http.Response, error) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
+	client := netutils.NewClient(insecure)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

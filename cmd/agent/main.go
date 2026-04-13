@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/angariumd/angarium/internal/agent"
 	"github.com/angariumd/angarium/internal/config"
+	"github.com/angariumd/angarium/internal/netutils"
 )
 
 func main() {
@@ -28,7 +28,7 @@ func main() {
 
 	if *noVerifyTLS || cfg.NoVerifyTLS {
 		log.Println("WARNING: TLS certificate verification disabled. Do not use in production.")
-		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+		http.DefaultClient = netutils.NewClient(true)
 	}
 
 	nodeID, _ := os.Hostname()
