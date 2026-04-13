@@ -4,4 +4,4 @@ shared_token: "agent-secret-token"
 users:
   - id: "user-1"
     name: "Sam"
-    token: "sam-secret-token"
+    token: "YOUR_API_TOKEN"

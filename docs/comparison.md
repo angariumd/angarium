@@ -1,17 +1,9 @@
 # Why Slurm is overkill (and K8s is a pain)
 
-If you have a small lab with 4-10 nodes and a handful of researchers, you're in a weird spot. 
+Angarium was built because most AI researchers and labs are in a "weird middle ground": 
+You're too large for simple SSH scripts, but too small for the massive complexity of Slurm or Kubernetes.
 
-You're too big to rely on "SSH in and hope nobody's using GPU 0," but you're way too small to justify the headache of Slurm or the overhead of Kubernetes. 
-
-We built Angarium to fix that.
-
-### Slurm is built for a different scale
-Slurm assumes you have InfiniBand, fair-share algorithms for thousands of users, and a dedicated sysadmin to babysit `slurm.conf`. If you just want to run a training script without stepping on your labmate's toes, Slurm is massive overkill. You shouldn't need a PhD in Systems Administration to manage a dozen GPUs.
-
-### Kubernetes is built for web apps
-Kubernetes is brilliant for scale, but it's miserable for research. 
-Writing Dockerfiles for every single experiment, fighting `CrashLoopBackOff` errors, and messing with PVCs just to see your weights folder... it’s constant friction. Researchers want the CLI, the shared drive, and the bare metal.
+This document dives deeper into why we chose a different path.
 
 ## The Angarium Way
 

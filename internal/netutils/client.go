@@ -5,15 +5,11 @@ import (
 	"net/http"
 )
 
-// NewInsecureClient returns an http.Client that skips certificate verification.
-// This is useful for self-signed certificates in a private network (MVP).
-func NewInsecureClient() *http.Client {
+// NewClient returns an http.Client with optional certificate verification skipping.
+func NewClient(insecure bool) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure}, //nolint:gosec
 		},
 	}
 }
-
-// DefaultClient can be replaced with NewInsecureClient if we want global behavior.
-var DefaultClient = NewInsecureClient()

@@ -3,8 +3,8 @@ set -e
 
 # Help and usage
 if [[ "$1" == "--help" || "$1" == "-h" || "$1" == "help" ]]; then
-    echo "Angarium Installer"
-    echo ""
+    echo "🚀 Angarium Installer"
+    echo "--------------------------------------------------------"
     echo "Usage: ./install.sh [controller|agent]"
     echo ""
     echo "Commands:"
@@ -13,8 +13,8 @@ if [[ "$1" == "--help" || "$1" == "-h" || "$1" == "help" ]]; then
     echo ""
     echo "Notes:"
     echo "  - It automatically downloads the latest release from GitHub."
-    echo "  - Developers: Run 'make build' first to use local binaries."
-    echo ""
+    echo "  - Developers: Run 'make build' first to use local binaries in bin/"
+    echo "--------------------------------------------------------"
     exit 0
 fi
 
@@ -25,7 +25,7 @@ if [[ "$MODE" != "controller" && "$MODE" != "agent" ]]; then
     exit 1
 fi
 
-echo "Installing Angarium $MODE..."
+echo "📦 Installing Angarium $MODE..."
 
 # Detect OS/Arch
 OS="$(uname -s)"
@@ -57,7 +57,7 @@ fi
 if [[ "$HAS_LOCAL_BIN" == "true" ]]; then
     echo "Found local binaries in bin"
 else
-    echo "No local binaries found. Downloading release..."
+    echo "🌍 No local binaries found. Downloading latest release..."
 
     REPO="angariumd/angarium"
     LATEST_TAG=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
@@ -78,7 +78,7 @@ else
     TAR_NAME="angarium_${LATEST_TAG#v}_${OS_LOWER}_${ARCH_LOWER}.tar.gz"
     DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$TAR_NAME"
     
-    echo "Downloading $DOWNLOAD_URL..."
+    echo "📥 Downloading $DOWNLOAD_URL..."
     curl -L -f -o "/tmp/$TAR_NAME" "$DOWNLOAD_URL" || exit 1
     mkdir -p bin
     tar -xzf "/tmp/$TAR_NAME" -C bin/
@@ -129,6 +129,7 @@ if [[ ! -f "/etc/angarium/$MODE.yaml" ]]; then
          fi
     fi
     run_as_root chown angarium:angarium "/etc/angarium/$MODE.yaml"
+    echo "📝 Created default configuration at /etc/angarium/$MODE.yaml"
 fi
 
 # Create systemd service if not exists
@@ -147,14 +148,18 @@ fi
 
 # Print summary
 echo ""
+echo "✨ Angarium $MODE installation complete!"
 echo "--------------------------------------------------------"
-echo "Installation complete for: $MODE"
-echo "Binary:        /usr/local/bin/angarium-$MODE"
-echo "Config:        /etc/angarium/$MODE.yaml"
-echo "Service:       angarium-$MODE"
+echo "  📂 Binary:   /usr/local/bin/angarium-$MODE"
+echo "  ⚙️  Config:   /etc/angarium/$MODE.yaml"
+echo "  🛠️  Service:  angarium-$MODE"
 echo "--------------------------------------------------------"
 if command -v systemctl &> /dev/null && [ -f "/etc/systemd/system/angarium-$MODE.service" ]; then
-    echo "Run 'sudo systemctl start angarium-$MODE' to start."
+    echo "👉 Run 'sudo systemctl start angarium-$MODE' to start."
+    echo "👉 Check logs with 'journalctl -u angarium-$MODE -f'"
 else
-    echo "To start manually: sudo /usr/local/bin/angarium-$MODE"
+    echo "👉 To start manually: sudo /usr/local/bin/angarium-$MODE"
 fi
+echo ""
+echo "Happy Scheduling! 🛰️"
+echo ""
